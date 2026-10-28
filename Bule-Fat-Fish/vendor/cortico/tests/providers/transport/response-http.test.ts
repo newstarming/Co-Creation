@@ -1,0 +1,130 @@
+/**
+ * generate 的重试策略:429 按 Retry-After 决定下一次等待,408 与网络错误同入重试集,
+ * 其余 4xx 与流内 error 事件不重试。Fixture 借道共享传输。
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import { OpenAIHttpClient } from '../../../src/providers/transport/chat.ts';
+import type { NativeChatMessage } from '../../../src/providers/transport/native-types.ts';
+import type { Logger, ModelSpec, ToolSchema } from '../../../src/core/types.ts';
+import { nullLogger } from '../../../src/core/util.ts';
+import { GenerationError } from '../../../src/core/generation.ts';
+import { ResponsesProvider } from '../../../src/providers/openai-responses-compat/native.ts';
+
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+class Fixture extends OpenAIHttpClient {
+  constructor(log: Logger = nullLogger()) { super('https://fixture.test', log); }
+  protected buildBody(spec: ModelSpec, messages: NativeChatMessage[], tools?: ToolSchema[]): Record<string, unknown> {
+    return { model: spec.model, messages };
+  }
+  protected headers(): Record<string, string> { return { 'Content-Type': 'application/json' }; }
+}
+const ok = () => new Response(JSON.stringify({ id: 'r1', model: 'test', choices: [{ index: 0, message: { content: 'ready' }, finish_reason: 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 2 } }));
+
+describe('request body', () => {
+  it('a lone surrogate in the context goes out as U+FFFD; whole pairs are kept', async () => {
+    let sent = '';
+    vi.stubGlobal('fetch', async (_url: unknown, init: RequestInit) => { sent = String(init.body); return ok(); });
+    await new Fixture().respond({ model: 'test', input: [{ type: 'message', role: 'user', content: 'cut \ud83c here 🎤' }] });
+    expect(JSON.parse(sent).messages[0].content).toBe('cut � here 🎤');
+    expect(sent).not.toMatch(/\\ud83c/i);
+  });
+});
+
+describe('retry policy', () => {
+  it('waits out the Retry-After interval before retrying a 429', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('rate limited', { status: 429, headers: { 'retry-after': '2' } }))
+      .mockResolvedValueOnce(ok());
+    vi.stubGlobal('fetch', fetcher);
+    const promise = new Fixture().respond({ model: 'test', input: 'hi' });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(promise).resolves.toMatchObject({ response: { status: 'completed' } });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a 408 request timeout', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('timeout', { status: 408 }))
+      .mockResolvedValueOnce(ok());
+    vi.stubGlobal('fetch', fetcher);
+    const promise = new Fixture().respond({ model: 'test', input: 'hi' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(promise).resolves.toMatchObject({ response: { status: 'completed' } });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits out a long Retry-After; the caller signal is the only bound', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('rate limited', { status: 429, headers: { 'retry-after': '3600' } }))
+      .mockResolvedValueOnce(ok());
+    vi.stubGlobal('fetch', fetcher);
+    const promise = new Fixture().respond({ model: 'test', input: 'hi' });
+    await vi.advanceTimersByTimeAsync(3_599_999);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(promise).resolves.toMatchObject({ response: { status: 'completed' } });
+  });
+});
+
+describe('network failure detail', () => {
+  it('the retry log and the final error carry the cause code and message', async () => {
+    vi.useFakeTimers();
+    const text = 'fetch failed (UNABLE_TO_GET_ISSUER_CERT_LOCALLY: unable to get local issuer certificate)';
+    const cause = Object.assign(new Error('unable to get local issuer certificate'), { code: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' });
+    vi.stubGlobal('fetch', async () => { throw new TypeError('fetch failed', { cause }); });
+    const retries: unknown[] = [];
+    const log = { ...nullLogger(), warn: (_msg: string, meta?: Record<string, unknown>) => retries.push(meta?.err) };
+    const promise = new Fixture(log).respond({ model: 'test', input: 'hi' });
+    const settled = expect(promise).rejects.toThrow(text);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await settled;
+    expect(retries.length).toBeGreaterThan(0);
+    expect(new Set(retries)).toEqual(new Set([text]));
+  });
+});
+
+describe('upstream rejection of a streaming request', () => {
+  const said = 'Input text data may contain inappropriate content.';
+  /** A server that answers every request with `answer`; resolves with its port. */
+  const serve = (answer: (res: import('node:http').ServerResponse) => void) => {
+    let requests = 0;
+    const server: Server = createServer((_req, res) => { requests++; answer(res); });
+    const port = new Promise<number>((done) => server.listen(0, '127.0.0.1', () => done((server.address() as { port: number }).port)));
+    return { port, requests: () => requests, close: () => server.close() };
+  };
+  const stream = async (port: number) => new ResponsesProvider({ baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'key' })
+    .respond({ model: 'test', input: 'hi' }, { onEvent: () => {} }).catch((error: unknown) => error);
+
+  it('a 400 with a JSON body fails after one request, with the status and the upstream message', async () => {
+    const body = JSON.stringify({ error: { type: 'invalid_request_error', message: said } });
+    const server = serve((res) => res.writeHead(400, { 'content-type': 'application/json' }).end(body));
+    try {
+      const failure = await stream(await server.port);
+      expect(failure).toBeInstanceOf(GenerationError);
+      expect(failure).toMatchObject({ status: 400, body, message: `LLM API 400: ${said}` });
+      expect(server.requests()).toBe(1);
+    } finally { server.close(); }
+  });
+
+  it('an error event as the first event of a 200 stream fails after one request, with the upstream message', async () => {
+    const event = { type: 'error', sequence_number: 0, error: { type: 'invalid_request_error', code: null, message: said, param: null } };
+    const server = serve((res) => res.writeHead(200, { 'content-type': 'text/event-stream' }).end(`event: error
+data: ${JSON.stringify(event)}
+
+`));
+    try {
+      const failure = await stream(await server.port);
+      expect(failure).toBeInstanceOf(GenerationError);
+      expect(failure).toMatchObject({ status: 0, body: JSON.stringify(event) });
+      expect((failure as Error).message).toContain(said);
+      expect(server.requests()).toBe(1);
+    } finally { server.close(); }
+  });
+});

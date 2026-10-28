@@ -1,0 +1,17 @@
+# docker compose --env-file .env up -d --build   (.env holds STATS_TOKEN)
+services:
+  telemetry:
+    build: .
+    restart: unless-stopped
+    environment:
+      STATS_TOKEN: ${STATS_TOKEN}
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8790:8790"
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

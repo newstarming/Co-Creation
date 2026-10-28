@@ -1,0 +1,524 @@
+/**
+ * 按 WorldDefinition 构造实例，依据 worlds.<id>.enabled 挂载，并提供运行时激活、停用和重启。
+ * 挂载状态与启动状态分开，实际启动由 Core 管理。定义实例在停用和重启时重新构造；
+ * 预建实例重启时复用原对象。名称、标签与缺失原因来自定义或 bot 声明。
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type {
+  CoreConfig, DescribeText, EventDescribe, ToolDescribe, ToolSpec, World, WorldLifecycleEvent,
+} from './core/types.ts';
+import type { LoadedConfig } from './core/config.ts';
+import type { BotDefinition } from './bot.ts';
+import { updateJsonObject, writeSecretFile } from './config-file.ts';
+import type { Language } from './core/language.ts';
+import { assemblyText as text } from './strings.ts';
+
+/** 每个 World 配置段的最小形状。 */
+export interface WorldSection {
+  enabled: boolean;
+}
+
+export type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T;
+
+/** 装配层提供给 World 构造函数的上下文。 */
+export interface WorldContext<S extends WorldSection = WorldSection> {
+  readonly id: string;
+  /** worlds.<id> 的共享引用；每次读取的配置立即生效，构造时保存的值需重启实例。 */
+  readonly cfg: S;
+  readonly timezone: string;
+  readonly botName: string;
+  /** 部署目录，保存本机配置、密钥和部署资产覆盖。 */
+  readonly botDir: string;
+  /** bot 代码包目录，供包内模板与资产使用，可由多个部署共享。 */
+  readonly packageDir: string;
+  readonly dataDir: string;
+  readonly repoRoot: string;
+  secret(name: string): string;
+  /** 将密钥写入部署 .env(仅本人可读)，并更新进程环境供 secret() 立即读取。name 须是环境变量名，值不能为空或含空白，否则抛错。 */
+  storeSecret(name: string, value: string): void;
+  /** 深合并进 `worlds.<id>` 段:活对象与 config.json 同步。数组整体替换。 */
+  persist(patch: DeepPartial<S>): void;
+  /** 按 cfg.enabled 同步状态：启用时激活或重启，禁用时停止。排在同一 World 之前的激活、停用、重启之后执行。 */
+  restart(): Promise<void>;
+}
+
+export interface WorldDefinition<S extends WorldSection = WorldSection> {
+  id: string;
+  label: string;
+  /** World 配置默认值，每次返回新对象；enabled=false，由 bot 声明或部署配置启用。 */
+  defaults(): S;
+  /** 激活前置检查。抛错 = 不能激活,错误信息原样给操作者。 */
+  preflight?(ctx: WorldContext<S>): void;
+  /**
+   * 返回 x-options 的完整选项表，包含按请求语言生成的固定项。
+   * 未知 kind 返回空数组，框架继续查询其他 World；当前值不在表中时由 WebUI 补入。
+   * Persona 的选项由 Bot WebUiContribution 提供。
+   */
+  configOptions?(kind: string, language: Language): Array<{ value: string; label: string }>;
+  create(ctx: WorldContext<S>): World;
+  /**
+   * 自描述:全部工具与会推出的事件,给人和扩展市场看,不进提示词。实例的 `tools()` 返回其中的子集;
+   * 挂载时有不在这里的工具、推出不在这里的事件,照常生效,记进运行日志并在 World 页标出。
+   * `pnpm describe:extension` 把它导出成包里的 describe.json。
+   */
+  describe?: WorldDescribe;
+}
+
+/** World 的自描述。 */
+export interface WorldDescribe {
+  tools: readonly ToolDescribe[];
+  events: readonly EventDescribe[];
+}
+
+/**
+ * 由工具声明拼出自描述里的工具:取发给模型的字段与标签,`summaries` 按工具名给每个工具一句给人看的话。
+ * World 与 Persona 共用。
+ */
+export function describeTools(
+  decls: readonly ToolSpec[],
+  summaries: Readonly<Record<string, DescribeText>>,
+): ToolDescribe[] {
+  return decls.map(({ name, description, parameters, tags }) => ({
+    name, description, parameters, tags, summary: summaries[name],
+  }));
+}
+
+/**
+ * bot 默认使用的 World 声明。字符串是 World id；对象还可提供标签与缺失原因。
+ * 两种声明均允许本地缺少实现。
+ */
+export type WorldDeclaration = string | { id: string; label: string; reason?: string };
+
+/** 各 World 的默认配置段；已声明的 id 默认启用。 */
+export function worldDefaults(
+  definitions: readonly WorldDefinition<WorldSection>[],
+  declares: readonly WorldDeclaration[],
+  overrides: Record<string, Record<string, unknown>> = {},
+): Record<string, WorldSection> {
+  const declared = new Set(declares.map((d) => (typeof d === 'string' ? d : d.id)));
+  const worlds: Record<string, WorldSection> = {};
+  for (const def of definitions) {
+    worlds[def.id] = { ...def.defaults(), enabled: declared.has(def.id), ...(overrides[def.id] ?? {}) };
+  }
+  return worlds;
+}
+
+/**
+ * 将可用 World 定义加入 bot。对 defaults() 中缺失的 World 段补充默认值，
+ * 已声明的 id 默认启用，其余默认关闭；已有配置段保持原样。
+ */
+export function withWorlds<C extends CoreConfig>(
+  definition: BotDefinition<C>,
+  definitions: readonly WorldDefinition<WorldSection>[],
+): BotDefinition<C> {
+  const declared = new Set((definition.declares ?? []).map((d) => (typeof d === 'string' ? d : d.id)));
+  return {
+    ...definition,
+    worlds: definitions,
+    defaults: () => {
+      const config = definition.defaults();
+      const worlds = ((config as unknown as { worlds?: Record<string, WorldSection> }).worlds ??= {});
+      for (const def of definitions) worlds[def.id] ??= { ...def.defaults(), enabled: declared.has(def.id) };
+      return config;
+    },
+  };
+}
+
+export interface WorldSlot {
+  readonly id: string;
+  readonly label: string;
+  /** bot 声明过的渠道;false = 部署侧选配。 */
+  readonly declared: boolean;
+  /** null = 预建实例(不能重建,只能停/起)。 */
+  readonly definition: WorldDefinition<WorldSection> | null;
+  instance: World;
+  mounted: boolean;
+  /** 启动期 `start()` 抛错的理由,按界面语言给;激活成功或停用后清掉。 */
+  startFailed?: (language: Language) => string;
+}
+
+export interface MissingWorld {
+  readonly id: string;
+  readonly label: string;
+  /** 缺失的原因,按界面语言给;bot 声明里自带的理由不翻译。 */
+  readonly reason: (language: Language) => string;
+  /** Persona声明过的渠道。缺省 true:声明了却没实现的那类。 */
+  readonly declared?: boolean;
+}
+
+export interface PrebuiltOptions {
+  /** WebUI 显示名;缺省用 id。 */
+  labels?: Record<string, string>;
+  /** 按 bot 声明的渠道算(缺省)还是按部署侧选配算。 */
+  declared?: boolean;
+}
+
+/** Core 构造后绑定挂载与卸载方法。 */
+export interface WorldMountHost {
+  mount(mod: World): Promise<void>;
+  unmount(id: string): Promise<void>;
+  /** 装配层改了一个槽位的挂载状态(激活 / 停用 / 重启),或启动期 `start()` 抛错。启动期的初始挂载不报。 */
+  lifecycle?(event: WorldLifecycleEvent): void;
+  /**
+   * Core 保留帧与 Persona 自有工具的名称。绑定时检查已挂载实例，
+   * 冲突实例移入 missing；后续激活、重启和添加预建实例同样检查。
+   */
+  reservedToolNames?(): readonly string[];
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** 就地深合并:叶子替换,沿途对象身份保持,数组整体替换。 */
+function assignDeep(target: Record<string, unknown>, patch: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    const current = target[key];
+    if (isPlainObject(value) && isPlainObject(current)) assignDeep(current, value);
+    else target[key] = isPlainObject(value) ? structuredClone(value) : value;
+  }
+}
+
+/** A .env line holds one variable name and a value without whitespace; anything else is refused. */
+function writeEnvLine(envPath: string, name: string, value: string): void {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`storeSecret: "${name}" is not an environment variable name`);
+  if (!value || /\s/.test(value)) throw new Error(`storeSecret: the value of ${name} is empty or holds whitespace`);
+  const prev = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
+  const line = `${name}=${value}`;
+  const pattern = new RegExp(`^[ \\t]*${name}\\s*=.*$`, 'm');
+  const next = pattern.test(prev)
+    ? prev.replace(pattern, line)
+    : (prev.trimEnd() ? `${prev.trimEnd()}\n${line}\n` : `${line}\n`);
+  writeSecretFile(envPath, next);
+}
+
+export class WorldAssembly {
+  /** 挂载表。与 core 共用同一个数组,激活/停用就地增删。 */
+  readonly mounted: World[] = [];
+  readonly slots: WorldSlot[] = [];
+  /** 装配拿到的全部定义,构造失败的也在内。 */
+  get definitions(): readonly WorldDefinition<WorldSection>[] { return this.worlds; }
+  readonly missing: MissingWorld[] = [];
+  private host: WorldMountHost | null = null;
+  private readonly cfgPath: string;
+  /** 每个 World 最后一个排队的生命周期操作，结束即移除。 */
+  private readonly lifecycleQueues = new Map<string, Promise<void>>();
+
+  constructor(
+    private readonly loaded: LoadedConfig<CoreConfig>,
+    private readonly worlds: readonly WorldDefinition<WorldSection>[],
+    declares: readonly WorldDeclaration[],
+  ) {
+    this.cfgPath = join(loaded.rootDir, 'config.json');
+    const declared = new Set<string>();
+    for (const decl of declares) declared.add(typeof decl === 'string' ? decl : decl.id);
+    const defined = new Set(worlds.map((m) => m.id));
+    for (const def of worlds) {
+      const section = this.section(def);
+      let instance: World;
+      try {
+        instance = def.create(this.context(def));
+      } catch (error) {
+        // 单个定义构造失败记入 missing，继续构造其他 World。
+        const detail = error instanceof Error ? error.message : String(error);
+        this.missing.push({
+          id: def.id,
+          label: def.label,
+          declared: declared.has(def.id),
+          reason: (language) => text(language).constructFailed(detail),
+        });
+        continue;
+      }
+      // Core 按实例 id 归属工具与事件,装配层按定义 id 找槽位,两者须一致。
+      if (instance.id !== def.id) {
+        const instanceId = String(instance.id);
+        this.missing.push({
+          id: def.id,
+          label: def.label,
+          declared: declared.has(def.id),
+          reason: (language) => text(language).instanceIdMismatch(instanceId, def.id),
+        });
+        continue;
+      }
+      const clash = section.enabled ? this.toolClash(instance, this.mounted) : null;
+      if (clash) {
+        this.missing.push({ id: def.id, label: def.label, declared: declared.has(def.id), reason: clash });
+        continue;
+      }
+      const slot: WorldSlot = {
+        id: def.id,
+        label: def.label,
+        declared: declared.has(def.id),
+        definition: def,
+        instance,
+        mounted: false,
+      };
+      this.slots.push(slot);
+      if (section.enabled) {
+        slot.mounted = true;
+        this.mounted.push(slot.instance);
+      }
+    }
+    for (const decl of declares) {
+      if (typeof decl === 'string') {
+        if (!defined.has(decl)) this.missing.push({ id: decl, label: decl, reason: (language) => text(language).notImplemented });
+        continue;
+      }
+      if (defined.has(decl.id)) continue;
+      const given = decl.reason;
+      this.missing.push({ id: decl.id, label: decl.label, reason: given ? () => given : (language) => text(language).notImplemented });
+    }
+  }
+
+  /** 只有预建实例的槽位表(测试与开发态用):不读配置,不写 config.json。 */
+  static ofInstances(instances: readonly World[], opts: PrebuiltOptions = {}): WorldAssembly {
+    const loaded = {
+      config: { worlds: {} } as unknown as CoreConfig,
+      secret: () => '',
+      rootDir: '',
+      memoryDir: '',
+      dataDir: '',
+    } satisfies LoadedConfig<CoreConfig>;
+    const assembly = new WorldAssembly(loaded, [], []);
+    assembly.addPrebuilt(instances, opts);
+    return assembly;
+  }
+
+  /** 预建实例初始挂载，重启复用原对象；同 id 时替换原定义实例。 */
+  addPrebuilt(instances: readonly World[], opts: PrebuiltOptions = {}): void {
+    for (const mod of instances) {
+      const existing = this.slots.findIndex((s) => s.id === mod.id);
+      if (existing >= 0) {
+        const old = this.slots[existing];
+        if (old.mounted) this.mounted.splice(this.mounted.indexOf(old.instance), 1);
+        this.slots.splice(existing, 1);
+      }
+      const clash = this.toolClash(mod, this.mounted);
+      if (clash) throw new Error(clash('zh'));
+      this.slots.push({
+        id: mod.id,
+        label: opts.labels?.[mod.id] ?? mod.id,
+        declared: opts.declared ?? true,
+        definition: null,
+        instance: mod,
+        mounted: true,
+      });
+      this.mounted.push(mod);
+    }
+  }
+
+  /** 绑定 Core 后检查保留名称，冲突的已挂载实例移入 missing。 */
+  bind(host: WorldMountHost): void {
+    this.host = host;
+    for (const slot of [...this.slots]) {
+      if (!slot.mounted) continue;
+      const clash = this.toolClash(slot.instance, []);
+      if (!clash) continue;
+      this.mounted.splice(this.mounted.indexOf(slot.instance), 1);
+      this.slots.splice(this.slots.indexOf(slot), 1);
+      this.missing.push({ id: slot.id, label: slot.label, declared: slot.declared, reason: clash });
+    }
+  }
+
+  slot(id: string, language: Language = 'zh'): WorldSlot {
+    const slot = this.slots.find((s) => s.id === id);
+    if (!slot) throw new Error(text(language).unknownWorld(id));
+    return slot;
+  }
+
+  /** 所有槽位的实例(含未挂载的),给 WebUI 拼面板、提示词文档与配置组用。 */
+  instances(): World[] {
+    return this.slots.map((s) => s.instance);
+  }
+
+  labelOf(id: string): string | undefined {
+    return this.slots.find((s) => s.id === id)?.label;
+  }
+
+  /**
+   * `language` 下的显示名,每次现取:实例的 `webUi(language).label`,其次定义的 `label`;
+   * 预建实例与只有声明的缺失项用装配时记下的名字。
+   */
+  labelIn(id: string, language: Language): string {
+    const slot = this.slots.find((s) => s.id === id);
+    let declared: string | undefined;
+    try {
+      declared = slot?.instance.webUi?.(language)?.label;
+    } catch {
+      declared = undefined;
+    }
+    const def = slot ? slot.definition : this.worlds.find((d) => d.id === id);
+    return declared ?? def?.label ?? slot?.label ?? this.missing.find((m) => m.id === id)?.label ?? id;
+  }
+
+  /**
+   * 三个动作的回执与拒绝理由按 `language` 给;省略 = 中文。
+   * 同一 World 的激活、停用、重启、对账按调用顺序逐个执行，前一个失败不影响后一个。
+   */
+  activate(id: string, language: Language = 'zh'): Promise<string> {
+    return this.queued(id, () => this.activateNow(id, language));
+  }
+
+  deactivate(id: string, language: Language = 'zh'): Promise<string> {
+    return this.queued(id, () => this.deactivateNow(id, language));
+  }
+
+  restart(id: string, language: Language = 'zh'): Promise<string> {
+    return this.queued(id, () => this.restartNow(id, language));
+  }
+
+  /**
+   * Core 启动期报回的 `start()` 失败:槽位回到未激活并记下理由,`enabled` 不变,
+   * 定义实例重建,报一次 start-failed;Core 已把失败实例移出挂载表。
+   */
+  startFailed(id: string, detail: string): void {
+    const slot = this.slot(id);
+    const index = this.mounted.indexOf(slot.instance);
+    if (index >= 0) this.mounted.splice(index, 1);
+    slot.mounted = false;
+    if (slot.definition) slot.instance = slot.definition.create(this.context(slot.definition));
+    slot.startFailed = (language) => text(language).startFailed(detail);
+    this.host?.lifecycle?.({ kind: 'start-failed', id, label: slot.label, reason: detail });
+  }
+
+  /** 按 worlds.<id>.enabled 同步状态，供 WorldContext.restart 调用。 */
+  sync(id: string): Promise<void> {
+    return this.queued(id, () => this.syncNow(id));
+  }
+
+  private queued<T>(id: string, op: () => Promise<T>): Promise<T> {
+    const result = (this.lifecycleQueues.get(id) ?? Promise.resolve()).then(op);
+    const settled = result.then(() => undefined, () => undefined);
+    this.lifecycleQueues.set(id, settled);
+    void settled.then(() => {
+      if (this.lifecycleQueues.get(id) === settled) this.lifecycleQueues.delete(id);
+    });
+    return result;
+  }
+
+  private async activateNow(id: string, language: Language): Promise<string> {
+    const t = text(language);
+    const slot = this.slot(id, language);
+    if (slot.mounted) return t.alreadyRunning(this.labelIn(id, language));
+    const def = slot.definition;
+    if (!def) throw new Error(t.prebuilt(this.labelIn(id, language)));
+    const ctx = this.context(def);
+    def.preflight?.(ctx);
+    const clash = this.toolClash(slot.instance, this.mounted);
+    if (clash) throw new Error(clash(language));
+    this.persist(id, { enabled: true });
+    try {
+      await this.mountHost().mount(slot.instance);
+    } catch (error) {
+      this.persist(id, { enabled: false });
+      slot.instance = def.create(ctx);
+      throw error;
+    }
+    slot.mounted = true;
+    delete slot.startFailed;
+    this.host?.lifecycle?.({ kind: 'mounted', id, label: slot.label });
+    return t.activated(this.labelIn(id, language), id);
+  }
+
+  private async deactivateNow(id: string, language: Language): Promise<string> {
+    const slot = this.slot(id, language);
+    const wasMounted = slot.mounted;
+    if (wasMounted) await this.stopSlot(slot);
+    this.persist(id, { enabled: false });
+    delete slot.startFailed;
+    if (wasMounted) this.host?.lifecycle?.({ kind: 'unmounted', id, label: slot.label });
+    return text(language).deactivated(this.labelIn(id, language), id);
+  }
+
+  private async restartNow(id: string, language: Language): Promise<string> {
+    const slot = this.slot(id, language);
+    if (!slot.mounted) throw new Error(text(language).notActive(this.labelIn(id, language)));
+    await this.stopSlot(slot);
+    const clash = this.toolClash(slot.instance, this.mounted);
+    if (clash) throw new Error(clash(language));
+    await this.mountHost().mount(slot.instance);
+    slot.mounted = true;
+    this.host?.lifecycle?.({ kind: 'restarted', id, label: slot.label });
+    return text(language).restarted(this.labelIn(id, language));
+  }
+
+  private async syncNow(id: string): Promise<void> {
+    const slot = this.slot(id);
+    const enabled = (slot.definition ? this.section(slot.definition) : { enabled: true }).enabled;
+    if (enabled) {
+      if (slot.mounted) await this.restartNow(id, 'zh');
+      else await this.activateNow(id, 'zh');
+    } else if (slot.mounted) {
+      await this.stopSlot(slot);
+      this.host?.lifecycle?.({ kind: 'unmounted', id, label: slot.label });
+    }
+  }
+
+  private async stopSlot(slot: WorldSlot): Promise<void> {
+    await this.mountHost().unmount(slot.id);
+    slot.mounted = false;
+    if (slot.definition) slot.instance = slot.definition.create(this.context(slot.definition));
+  }
+
+  /** 工具名在 bot 内唯一。与保留名称或已挂载 World 工具冲突时拒绝挂载。 */
+  private toolClash(mod: World, mounted: readonly World[]): ((language: Language) => string) | null {
+    const names = new Set(mod.tools().map((t) => t.name));
+    const reserved = (this.host?.reservedToolNames?.() ?? []).filter((n) => names.has(n));
+    if (reserved.length) return (language) => text(language).toolReserved(reserved);
+    for (const other of mounted) {
+      const shared = other.tools().map((t) => t.name).filter((n) => names.has(n));
+      if (shared.length) {
+        return (language) => text(language).toolClash(mod.id, other.id, shared);
+      }
+    }
+    return null;
+  }
+
+  private mountHost(): WorldMountHost {
+    if (!this.host) throw new Error(text('zh').unbound);
+    return this.host;
+  }
+
+  /** `worlds.<id>` 活引用;缺段时按定义默认值补一段。 */
+  private section(def: WorldDefinition<WorldSection>): WorldSection {
+    const worlds = ((this.loaded.config as unknown as { worlds?: Record<string, WorldSection> }).worlds ??= {});
+    return (worlds[def.id] ??= def.defaults());
+  }
+
+  private persist(id: string, patch: Record<string, unknown>): void {
+    const worlds = (this.loaded.config as unknown as { worlds: Record<string, Record<string, unknown>> }).worlds;
+    assignDeep(worlds[id], patch);
+    updateJsonObject(this.cfgPath, (raw) => {
+      const rawIo = (raw.worlds ??= {}) as Record<string, Record<string, unknown>>;
+      const section = (rawIo[id] ??= {});
+      assignDeep(section, patch);
+    });
+  }
+
+  private context<S extends WorldSection>(def: WorldDefinition<S>): WorldContext<S> {
+    const { loaded } = this;
+    const cfg = loaded.config;
+    return {
+      id: def.id,
+      cfg: this.section(def as unknown as WorldDefinition<WorldSection>) as S,
+      timezone: cfg.timezone,
+      botName: cfg.displayName,
+      botDir: loaded.rootDir,
+      packageDir: loaded.packageDir ?? loaded.rootDir,
+      dataDir: loaded.dataDir,
+      repoRoot: loaded.repoRoot ?? loaded.rootDir,
+      secret: (name) => loaded.secret(name),
+      storeSecret: (name, value) => {
+        writeEnvLine(join(loaded.rootDir, '.env'), name, value);
+        process.env[name] = value;
+      },
+      persist: (patch) => this.persist(def.id, patch as Record<string, unknown>),
+      restart: () => this.sync(def.id),
+    };
+  }
+}

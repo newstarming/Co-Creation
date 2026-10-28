@@ -1,0 +1,407 @@
+/** Aggregate observed consumption and immutable Provider charges. */
+import type { UsageRecord } from './types.ts';
+import { billingBalances, recordCharges, type BillingBalance } from './billing.ts';
+import type { Charge } from './generation.ts';
+import { getTimezoneOffsetMinutes, nowIso } from './util.ts';
+
+/** 已解析的具体时间粒度(桶宽) */
+export type UsageBucketUnit = 'minute' | 'hour' | 'day' | 'week' | 'month';
+/** 请求粒度:具体粒度或 'auto'(按范围跨度自适应) */
+export type UsageBucketOption = UsageBucketUnit | 'auto';
+export type UsageGroupBy = 'role' | 'model' | 'none';
+
+/**
+ * 用量与费用合计，供时间序列及角色、模型分组使用。
+ * cost = costCacheHit + costCacheMiss + costOutput + costOther。
+ * reasoningTokens 是 completionTokens 的子集；费用采用记录内的 charges。
+ */
+export interface UsageAccum {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  reasoningTokens: number;
+  cost: number;
+  costCacheHit: number;
+  costCacheMiss: number;
+  costOutput: number;
+  costOther: number;
+  unclassifiedInputTokens: number;
+  pricedCalls: number;
+  unpricedCalls: number;
+  unknownUsageCalls: number;
+}
+
+export interface UsageSeriesPoint extends UsageAccum {
+  /** 本地时区前缀,如 2026-07-19T14:30、2026-07-19 或 2026-07。 */
+  bucket: string;
+  /** 本桶内按角色的子拆分(键=角色);用于堆叠"按角色"视图 */
+  byRole: Record<string, UsageAccum>;
+  /** 本桶内按模型的子拆分(键=模型);用于堆叠"按模型"视图 */
+  byModel: Record<string, UsageAccum>;
+  /** 按角色与模型交叉分组，键为 byRoleModel[role][model]。 */
+  byRoleModel: Record<string, Record<string, UsageAccum>>;
+}
+
+/** 按 role / model 分组的合计 */
+export interface UsageGroupStat extends UsageAccum {
+  key: string;
+  /** 声明方提供的 UsageRecord.label；与 key 相同时省略。缺失时显示 key，不推断角色名称。 */
+  label?: string;
+  cacheHitRate: number | null;
+}
+
+export interface UsageAggregate {
+  currency: string;
+  /** 这个计价基础下能显示的币种：有原价的，加上能从它们换算到的。 */
+  currencies: string[];
+  /** 1 USD 合多少该币种；所选币种没有原价的调用按它换算。 */
+  rates: Record<string, number>;
+  basis: 'marginal' | 'equivalent';
+  balances: BillingBalance[];
+  successful: UsageAccum;
+  byInstance: UsageGroupStat[];
+  /** 实际使用的粒度(auto 会被解析成具体值) */
+  bucket: UsageBucketUnit;
+  from: string | null;
+  to: string | null;
+  /** 日期范围与桶键所在的时区;调用方未给时为 null。 */
+  timezone: string | null;
+  /** 时间序列(按 bucket 升序)。有记录时首末桶之间连续,没有调用的桶各字段为 0。 */
+  series: UsageSeriesPoint[];
+  /** 全量合计 */
+  totals: UsageGroupStat;
+  /** 按角色分组(cost 降序) */
+  byRole: UsageGroupStat[];
+  /** 按模型分组(cost 降序) */
+  byModel: UsageGroupStat[];
+  /** Failed, aborted and discarded attempts are also included in totals. */
+  failed: UsageAccum;
+  /**
+   * 逐日的输入加输出 token 合计，只在给了 dailyTokenDays 时出现。窗口从范围末日(没有末日时取今天)
+   * 往前 dailyTokenDays 天，范围更长时从范围起点起；窗口内有记录时逐日连续，不越过当前时刻。
+   */
+  dailyTokens?: UsageDailyTokens[];
+}
+
+/** 一天的 token 合计;day 是 YYYY-MM-DD,与桶键同一时区。 */
+export interface UsageDailyTokens {
+  day: string;
+  tokens: number;
+}
+
+function zero(): UsageAccum {
+  return {
+    calls: 0, promptTokens: 0, completionTokens: 0,
+    cacheHitTokens: 0, cacheMissTokens: 0, reasoningTokens: 0,
+    cost: 0, costCacheHit: 0, costCacheMiss: 0, costOutput: 0, costOther: 0, unclassifiedInputTokens: 0,
+    pricedCalls: 0, unpricedCalls: 0, unknownUsageCalls: 0,
+  };
+}
+
+type MeasuredCost = { cacheHit: number; cacheMiss: number; output: number; total: number; priced: boolean };
+
+/** 1 USD 合多少 code;USD 恒为 1,没有正数汇率的币种为 null。 */
+function usdRate(code: string, rates: Readonly<Record<string, number>>): number | null {
+  if (code === 'USD') return 1;
+  const rate = rates[code];
+  return typeof rate === 'number' && rate > 0 ? rate : null;
+}
+
+/** 记录在 currency 下的费用：有原价用原价，否则取同一计价基础下第一笔能换算的费用，金额乘 factor。 */
+function chargeIn(charges: readonly Charge[], currency: string, basis: string, rates: Readonly<Record<string, number>>): { charge: Charge; factor: number } | null {
+  const native = charges.find(charge => charge.quote.currency === currency && charge.quote.basis === basis);
+  if (native) return { charge: native, factor: 1 };
+  const to = usdRate(currency, rates);
+  if (to === null) return null;
+  for (const charge of charges) {
+    if (charge.quote.basis !== basis) continue;
+    const from = usdRate(charge.quote.currency, rates);
+    if (from !== null) return { charge, factor: to / from };
+  }
+  return null;
+}
+
+function add(a: UsageAccum, r: UsageRecord, c: MeasuredCost): void {
+  a.calls += 1;
+  if (c.priced) a.pricedCalls++; else a.unpricedCalls++;
+  if (r.attempt && (r.attempt.meters.input === null || r.attempt.meters.output === null || r.attempt.meters.cachedInput === null)) a.unknownUsageCalls++;
+  a.promptTokens += r.promptTokens;
+  a.completionTokens += r.completionTokens;
+  a.cacheHitTokens += r.cacheHitTokens;
+  a.cacheMissTokens += r.cacheMissTokens;
+  a.reasoningTokens += r.reasoningTokens;
+  a.cost += c.total;
+  a.costCacheHit += c.cacheHit;
+  a.costCacheMiss += c.cacheMiss;
+  a.costOutput += c.output;
+  a.costOther += c.total - c.cacheHit - c.cacheMiss - c.output;
+  a.unclassifiedInputTokens += Math.max(0, r.promptTokens - r.cacheHitTokens - r.cacheMissTokens);
+}
+
+function upsert(m: Map<string, UsageAccum>, key: string, r: UsageRecord, c: MeasuredCost): void {
+  let a = m.get(key);
+  if (!a) { a = zero(); m.set(key, a); }
+  add(a, r, c);
+}
+
+function mapToObj(m: Map<string, UsageAccum>): Record<string, UsageAccum> {
+  const o: Record<string, UsageAccum> = {};
+  for (const [k, v] of m) o[k] = v;
+  return o;
+}
+
+function nestedMapToObj(m: Map<string, Map<string, UsageAccum>>): Record<string, Record<string, UsageAccum>> {
+  const o: Record<string, Record<string, UsageAccum>> = {};
+  for (const [k, inner] of m) o[k] = mapToObj(inner);
+  return o;
+}
+
+function statOf(key: string, a: UsageAccum, label?: string): UsageGroupStat {
+  const out: UsageGroupStat = { key, ...a, cacheHitRate: cacheHitRate(a) };
+  if (label && label !== key) out.label = label;
+  return out;
+}
+
+/** 一天 = 该日期(YYYY-MM-DD)所在 ISO 周的周一(用 UTC 计算,避免时区漂移) */
+function weekStart(day: string): string {
+  const [y, m, d] = day.split('-').map(Number);
+  const dt = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
+  const dow = (dt.getUTCDay() + 6) % 7; // 周一=0 … 周日=6
+  dt.setUTCDate(dt.getUTCDate() - dow);
+  return dt.toISOString().slice(0, 10);
+}
+
+const QUARTER_HOUR_MS = 15 * 60_000;
+
+/**
+ * 记录 ts 在 timezone 墙钟上的 `YYYY-MM-DDTHH:MM`。ts 带写入时的偏移,换过时区的记录要重算。
+ * 偏移按 15 分钟一档缓存:现行时区的偏移都是 15 分钟的整数倍,切换时刻因此落在 UTC 的 15 分钟整点上。
+ */
+function wallClockIn(timezone: string): (ts: string) => string {
+  const offsets = new Map<number, number>();
+  return (ts) => {
+    const ms = Date.parse(ts);
+    if (Number.isNaN(ms)) return ts.slice(0, 16);
+    const slot = Math.floor(ms / QUARTER_HOUR_MS);
+    let offset = offsets.get(slot);
+    if (offset === undefined) {
+      offset = getTimezoneOffsetMinutes(timezone, new Date(ms));
+      offsets.set(slot, offset);
+    }
+    return new Date(ms - offset * 60_000).toISOString().slice(0, 16);
+  };
+}
+
+/** 取某条记录在给定粒度下的桶键(墙钟 ISO 前缀直接切,周单独算) */
+function bucketKeyOf(ts: string, unit: UsageBucketUnit): string {
+  switch (unit) {
+    case 'minute': return ts.slice(0, 16); // YYYY-MM-DDTHH:MM
+    case 'hour': return ts.slice(0, 13);   // YYYY-MM-DDTHH
+    case 'day': return ts.slice(0, 10);    // YYYY-MM-DD
+    case 'week': return weekStart(ts.slice(0, 10));
+    case 'month': return ts.slice(0, 7);   // YYYY-MM
+  }
+}
+
+/**
+ * 桶键的下一个桶键。桶键是时区内的墙钟时间,按 UTC 日历做加法;夏令时跳过或重复的
+ * 那一小时同样出现一次。
+ */
+function nextBucketKey(key: string, unit: UsageBucketUnit): string {
+  const [y = 1970, mo = 1, d = 1] = key.slice(0, 10).split('-').map(Number);
+  const h = unit === 'minute' || unit === 'hour' ? Number(key.slice(11, 13)) : 0;
+  const mi = unit === 'minute' ? Number(key.slice(14, 16)) : 0;
+  const dt = new Date(Date.UTC(y, mo - 1, unit === 'month' ? 1 : d, h, mi));
+  if (unit === 'minute') dt.setUTCMinutes(dt.getUTCMinutes() + 1);
+  else if (unit === 'hour') dt.setUTCHours(dt.getUTCHours() + 1);
+  else if (unit === 'day') dt.setUTCDate(dt.getUTCDate() + 1);
+  else if (unit === 'week') dt.setUTCDate(dt.getUTCDate() + 7);
+  else dt.setUTCMonth(dt.getUTCMonth() + 1);
+  return bucketKeyOf(dt.toISOString(), unit);
+}
+
+/** YYYY-MM-DD 往前数 n 天。 */
+function daysBefore(day: string, n: number): string {
+  const dt = new Date(`${day}T00:00:00Z`);
+  dt.setUTCDate(dt.getUTCDate() - n);
+  return dt.toISOString().slice(0, 10);
+}
+
+/** from/to(YYYY-MM-DD,含端)之间的整天跨度(含首尾);任一为空→NaN */
+function daySpan(from?: string | null, to?: string | null): number {
+  if (!from || !to) return NaN;
+  const a = Date.parse(from + 'T00:00:00Z');
+  const b = Date.parse(to + 'T00:00:00Z');
+  if (Number.isNaN(a) || Number.isNaN(b)) return NaN;
+  return Math.abs(b - a) / 86400000 + 1;
+}
+
+/**
+ * 自动粒度：跨度 ≤2 天用小时，≤62 天用天，≤366 天用周，其余用月。
+ * 缺少 from/to 时用天；分钟需显式选择。
+ */
+export function resolveBucket(from?: string | null, to?: string | null): UsageBucketUnit {
+  const span = daySpan(from, to);
+  if (Number.isNaN(span)) return 'day';
+  if (span <= 2) return 'hour';
+  if (span <= 62) return 'day';
+  if (span <= 366) return 'week';
+  return 'month';
+}
+
+export interface UsageAggregateOptions {
+  from?: string | null;
+  to?: string | null;
+  /** 含今天在内的最近 N 天;给了就覆盖 from/to。今天按 timezone 取。 */
+  days?: number;
+  bucket: UsageBucketOption;
+  currency?: string;
+  basis?: 'marginal' | 'equivalent';
+  /** 1 USD 合多少该币种;0 或缺项的币种不参与换算。 */
+  rates?: Readonly<Record<string, number>>;
+  /**
+   * 日期范围与时间桶按这个时区的墙钟算,并按它解析 days、不为当前时刻之后补空桶。
+   * 不给时用记录 ts 自带的墙钟。
+   */
+  timezone?: string;
+  now?: Date;
+  /** 给了就在结果里附上 dailyTokens,窗口为范围末日往前这么多天。 */
+  dailyTokenDays?: number;
+}
+
+/**
+ * 按包含端点的日期范围筛选，按时间、角色和模型聚合用量。
+ * 费用从记录内的 charges 按币种和计价基础选择，再按 meter 归入四类成本。
+ */
+export function aggregateUsage(records: UsageRecord[], opts: UsageAggregateOptions): UsageAggregate {
+  const nowKeySource = opts.timezone ? nowIso(opts.timezone, opts.now) : null;
+  const today = nowKeySource?.slice(0, 10) ?? null;
+  const byDays = opts.days !== undefined && opts.days >= 1 && today !== null;
+  const from = byDays ? daysBefore(today, opts.days! - 1) : (opts.from ?? null);
+  const to = byDays ? today : (opts.to ?? null);
+  const unit: UsageBucketUnit = opts.bucket === 'auto' ? resolveBucket(from, to) : opts.bucket;
+  const series = new Map<string, { total: UsageAccum; roles: Map<string, UsageAccum>; models: Map<string, UsageAccum>; roleModels: Map<string, Map<string, UsageAccum>> }>();
+  const roles = new Map<string, UsageAccum>();
+  /** 同一 role 的 label 使用最后一条记录提供的值。 */
+  const roleLabels = new Map<string, string>();
+  const models = new Map<string, UsageAccum>();
+  const totals = zero();
+  const failed = zero();
+  const successful = zero();
+  const instances = new Map<string, UsageAccum>();
+  const wall = opts.timezone ? wallClockIn(opts.timezone) : (ts: string) => ts.slice(0, 16);
+  const walled = records
+    .filter(r => r && typeof r.ts === 'string')
+    .map(r => ({ r, at: wall(r.ts) }));
+  const keyed = walled.filter(({ at }) => (!from || at.slice(0, 10) >= from) && (!to || at.slice(0, 10) <= to));
+  const selected = keyed.map(({ r }) => r);
+  const balances = billingBalances(selected);
+  const basis = opts.basis ?? 'marginal';
+  const currency = opts.currency ?? balances.find(balance => balance.basis === basis)?.currency ?? 'USD';
+  const rates = { ...(opts.rates ?? {}) };
+  const native = [...new Set(balances.filter(balance => balance.basis === basis).map(balance => balance.currency))];
+  const convertible = native.some(code => usdRate(code, rates) !== null)
+    ? ['USD', ...Object.keys(rates).filter(code => usdRate(code, rates) !== null)]
+    : [];
+  const currencies = [...new Set([...native, ...convertible])];
+
+  for (const { r, at } of keyed) {
+    const found = chargeIn(recordCharges(r), currency, basis, rates);
+    const charge = found?.charge;
+    const factor = found?.factor ?? 1;
+    const cost: MeasuredCost = { cacheHit: 0, cacheMiss: 0, output: 0, total: (charge?.knownAmount ?? 0) * factor, priced: charge?.amount != null };
+    for (const line of charge?.lines ?? []) {
+      if (line.meter === 'cachedInput') cost.cacheHit += (line.amount ?? 0) * factor;
+      if (line.meter === 'uncachedInput' || line.meter === 'input') cost.cacheMiss += (line.amount ?? 0) * factor;
+      if (line.meter === 'output') cost.output += (line.amount ?? 0) * factor;
+    }
+    const outcome = r.attempt?.outcome;
+    if (r.outcome !== undefined || (outcome !== undefined && outcome !== 'completed' && outcome !== 'incomplete')) add(failed, r, cost);
+    else if (r.attempt?.purpose !== 'diagnostic') add(successful, r, cost);
+    upsert(instances, r.attempt?.origin.instance ?? 'unknown', r, cost);
+    const role = r.role ?? 'unknown';
+    const model = r.model || 'unknown';
+    const bk = bucketKeyOf(at, unit);
+    let bucketAcc = series.get(bk);
+    if (!bucketAcc) { bucketAcc = { total: zero(), roles: new Map(), models: new Map(), roleModels: new Map() }; series.set(bk, bucketAcc); }
+    add(bucketAcc.total, r, cost);
+    upsert(bucketAcc.roles, role, r, cost);
+    upsert(bucketAcc.models, model, r, cost);
+    let rm = bucketAcc.roleModels.get(role);
+    if (!rm) { rm = new Map(); bucketAcc.roleModels.set(role, rm); }
+    upsert(rm, model, r, cost);
+    upsert(roles, role, r, cost);
+    if (r.label) roleLabels.set(role, r.label);
+    upsert(models, model, r, cost);
+    add(totals, r, cost);
+  }
+
+  const keys = [...series.keys()].sort();
+  if (keys.length) {
+    // 补齐范围内没有调用的桶:从 from(缺省首条记录)到 to(缺省末条记录),不越过当前时刻。
+    let end = to ? bucketKeyOf(`${to}T23:59`, unit) : keys[keys.length - 1]!;
+    if (nowKeySource) {
+      const nowKey = bucketKeyOf(nowKeySource, unit);
+      if (nowKey < end) end = nowKey;
+    }
+    if (keys[keys.length - 1]! > end) end = keys[keys.length - 1]!;
+    let key = from ? bucketKeyOf(`${from}T00:00`, unit) : keys[0]!;
+    if (keys[0]! < key) key = keys[0]!;
+    for (; key <= end; key = nextBucketKey(key, unit)) {
+      if (!series.has(key)) series.set(key, { total: zero(), roles: new Map(), models: new Map(), roleModels: new Map() });
+    }
+  }
+  const seriesOut: UsageSeriesPoint[] = [...series.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([b, acc]) => ({ bucket: b, ...acc.total, byRole: mapToObj(acc.roles), byModel: mapToObj(acc.models), byRoleModel: nestedMapToObj(acc.roleModels) }));
+  const groupOut = (m: Map<string, UsageAccum>, labels?: Map<string, string>): UsageGroupStat[] =>
+    [...m.entries()].map(([k, a]) => statOf(k, a, labels?.get(k))).sort((x, y) => y.cost - x.cost);
+
+  const out: UsageAggregate = {
+    currency, currencies, rates, basis, balances, successful, byInstance: groupOut(instances),
+    bucket: unit,
+    from,
+    to,
+    timezone: opts.timezone ?? null,
+    series: seriesOut,
+    totals: statOf('total', totals),
+    byRole: groupOut(roles, roleLabels),
+    byModel: groupOut(models),
+    failed,
+  };
+  if (opts.dailyTokenDays !== undefined && opts.dailyTokenDays >= 1) {
+    out.dailyTokens = dailyTokensOf(walled, from, to ?? today, today, opts.dailyTokenDays);
+  }
+  return out;
+}
+
+/** 逐日 token 合计，口径同 UsageAggregate.dailyTokens;end 是窗口末日，today 是部署时区的今天。 */
+function dailyTokensOf(
+  walled: ReadonlyArray<{ r: UsageRecord; at: string }>,
+  from: string | null,
+  end: string | null,
+  today: string | null,
+  days: number,
+): UsageDailyTokens[] {
+  if (!end) return [];
+  const back = daysBefore(end, days - 1);
+  const start = from && from < back ? from : back;
+  const sums = new Map<string, number>();
+  for (const { r, at } of walled) {
+    const day = at.slice(0, 10);
+    if (day >= start && day <= end) sums.set(day, (sums.get(day) ?? 0) + r.promptTokens + r.completionTokens);
+  }
+  if (!sums.size) return [];
+  let last = today && today < end ? today : end;
+  for (const day of sums.keys()) if (day > last) last = day;
+  const out: UsageDailyTokens[] = [];
+  for (let day = start; day <= last; day = nextBucketKey(day, 'day')) out.push({ day, tokens: sums.get(day) ?? 0 });
+  return out;
+}
+
+export function cacheHitRate(u: { cacheHitTokens: number; cacheMissTokens: number }): number | null {
+  const total = u.cacheHitTokens + u.cacheMissTokens;
+  return total > 0 ? u.cacheHitTokens / total : null;
+}

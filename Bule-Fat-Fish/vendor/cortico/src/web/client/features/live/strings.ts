@@ -1,0 +1,291 @@
+import { pick } from '../../core/language.ts';
+import { S as zhHant } from './strings.zh-Hant.ts';
+import { S as ja } from './strings.ja.ts';
+import { S as ko } from './strings.ko.ts';
+import { S as fr } from './strings.fr.ts';
+import { S as de } from './strings.de.ts';
+import { S as es419 } from './strings.es-419.ts';
+import { S as ptBR } from './strings.pt-BR.ts';
+import { S as it } from './strings.it.ts';
+import { S as ru } from './strings.ru.ts';
+
+const zh = {
+  // index.ts
+  navLabel: '控制台',
+  currentProvider: '当前模型供应商',
+  noProvider: '未选择模型供应商',
+  ctxOpenAria: '查看 token 分类',
+  ctxPanelAria: 'Token 分类',
+  netConnecting: 'WebUI 连接中…',
+  netOnline: 'WebUI 已连接',
+  netOffline: 'WebUI 已断开',
+  composerLabel: '控制台消息输入',
+  composerPlaceholder: "输入消息…",
+  exportDiagnostics: '导出诊断',
+  exportFailed: '诊断包取不回来',
+  exportConfirmTitle: '导出诊断包',
+  exportConfirmBody: '诊断包包含对话、提示词、事件、工具调用、用量和运行日志。配置里的密钥已脱敏，其余内容原样写出。分享前请检查其中的私人信息。',
+  composerFork: '正在查看后台会话；这里发出的消息仍送到主会话',
+  composerNoProvider: '当前模型供应商不可用，请前往「模型供应商」页设置',
+  composerQueued: '控制台通道正在重连，消息已排队',
+  emptyConnecting: '连接调试通道中…',
+  ctxTitle: (total: string, max: string | null) =>
+    `上下文 ${total}${max !== null ? ` / ${max}` : ''} tok · 点击查看分类`,
+  ctxWaiting: '等待上下文数据',
+  sessionResetNote: 'SESSION 已截断重建',
+  debugUnavailable: '调试通道不可用',
+  debugNotMounted: "调试通道不可用，无法显示时间线。",
+
+  // status.ts
+  docTitle: (name: string) => `WebUI · ${name}`,
+  chipDisconnected: '未连接',
+  chipMsgs: ' 条',
+  chipCache: '缓存 ',
+  chipBatchesPre: '累计 ',
+  chipBatchesPost: ' 批',
+  chipPaused: '⏸ 已暂停',
+  chipBehind: (n: number) => `待投递 ${n}`,
+  chipScheduleBlocked: '◷ 投递扣留中',
+  chipTruncating: '截断中',
+  chipOnline: '在线 ',
+  phaseDelivering: '正在把事件写入上下文',
+  phaseModel: '等待模型输出',
+  phaseTools: '执行工具',
+  phaseBackoff: (clock: string) => `模型调用失败，${clock} 重试`,
+  phaseHandoff: '上下文交接中',
+  phaseRound: (n: number) => `第 ${n} 轮`,
+  phaseRunning: (names: string) => `运行中：${names}`,
+
+  // fork.ts
+  mainLabel: "主 session",
+  forkViewing: '◉ 正在查看后台会话 ',
+  forkInfo: (count: number, tok: string, ended: boolean, sec: number) =>
+    ` · ${count} 条 · ~${tok} tok · ` + (ended ? '已结束（定格）' : `未结束（每 ${sec} 秒刷新）`),
+  forkReadOnly: '此视图只读，输入框发出的消息仍送到主会话。',
+  forkBack: '⏎ 返回主 session',
+  forkEmpty: '（这个 session 还没有消息）',
+  forkFetchFailed: (msg: string) => `(拉取失败: ${msg})`,
+
+  // sessions.ts
+  sessionBandTitle: "Session 本次运行累计用量",
+  sessionCache: (pct: string) => `缓存${pct}`,
+  sessionCardTitle: (
+    label: string,
+    id: string,
+    running: boolean,
+    endedAt: string,
+    prompt: number,
+    completion: number,
+    hit: number,
+  ) =>
+    `${label} (${id})\n` +
+    `${running ? '未结束' : `已结束 ${endedAt}`}\n` +
+    `输入 ${prompt} / 输出 ${completion} / 命中 ${hit}`,
+
+  // timeline.ts
+  jumpBottom: '↓ 回到底部',
+  foldHead: (open: boolean, n: number) => `${open ? '▾' : '▸'} ${n} 字`,
+  ordinalTitle: (index: number) => `session 第 ${index} 条 Item`,
+  userGlyphTitle: 'user 消息',
+  empty: '（空）',
+  visibleReasoning: (n: number) => `可见思考 ${n} 字`,
+  encryptedReasoning: (n: number) => `加密思考 ${n} 字符`,
+  summary: '摘要',
+  monologTitle: (phase: string) => `assistant 正文${phase ? ` · ${phase}` : ''}`,
+  refusal: '拒绝',
+  synthetic: '合成',
+  encryptedPayload: (n: number) => `加密载荷 ${n} 字符`,
+  rawItems: '原始 Item',
+  headStart: '合成开头 · 不落盘',
+  headEnd: '合成开头 · 结束',
+  sessionEmpty: 'session 为空',
+
+  // context.ts
+  groupPrefix: '系统前缀',
+  groupTools: '工具',
+  groupDialogue: '对话',
+  catOrient: 'ORIENTATION',
+  catConstitution: '宪法 CONSTITUTION',
+  catEnv: '环境描述 · World',
+  catToolsUsage: '工具用法说明',
+  catMemory: '记忆 MEMORY',
+  catPrefixMisc: '前言 / 分隔 / 结构',
+  catToolsSchema: '工具表 schema',
+  catHead: '合成开头',
+  catReasoning: '思维链',
+  catDialogue: '对话往来 · 事件',
+  catToolIO: '工具调用与结果',
+  ctxNone: "暂无上下文数据。",
+  ctxUsage: '上下文估计构成',
+  ctxSub: (budgetPct: string | null, keepOn: boolean) =>
+    `${budgetPct === null ? '预算未知' : `占预算 ${budgetPct}`}　·　保留历史思维链：${keepOn ? '开' : '关'}`,
+  toolCount: (n: number) => `　${n} 个`,
+  footCountedPre: '总数以上游计数为准（上一发已数 ',
+  footCountedPost: '，之后新增的本地估算）；分类按本地估算等比分摊，只看比例。',
+  footEstimated: '还没有上游计数，整份按字数估算（中文≈0.6、其余≈0.3 token/字，每条 +8 结构开销）；下一发调用后以上游计数为准。',
+  footSchemaB: '工具表 schema',
+  footSchemaPost: ' 作为 tools 参数随每次调用发送，与消息分开计。',
+  footStrippedPre: '历史思维链已丢弃约 ',
+  footStrippedPost: " tok，不发送。",
+  footHardPre: '越过 ',
+  footHardPost: '（模型输入上限：上下文窗口减去输出预留）由 core 强制交接。',
+  footSoftPre: 'Persona 软阈值：',
+  footSoftPost: (max: string) => `；阶段预算 ${max}。`,
+
+  // onboarding.ts
+  obWho: 'Cortico',
+  obWelcome: '欢迎使用 Cortico！现在，让我们开始部署你的第一个 Cortico Bot。',
+  obProvider: '首先，请配置模型提供商：',
+  obProviderNone: '尚未配置可用的模型提供商',
+  obProviderReady: '模型提供商已配置',
+  obWorlds: '接下来，请启用并配置你的 Bot 接入的外部环境模组（Cortico World）。也可以先仅启用控制台对话。',
+  obWorldsState: (labels: readonly string[]) => `当前已经启用了 ${labels.length} 个外部环境：${labels.join('、')}`,
+  obPrompts: '最后，你可以在这里方便地编辑系统提示词，来提供人格描述、行为规范、语言风格等定制化内容！',
+  obReady: '准备就绪！',
+  obGoConfigure: '前往配置',
+  obGoEdit: '开始编辑',
+  obStart: '打个招呼？',
+};
+
+export const en: typeof zh = {
+  // index.ts
+  navLabel: 'Console',
+  currentProvider: 'Current model provider',
+  noProvider: 'No provider selected',
+  ctxOpenAria: 'View token breakdown',
+  ctxPanelAria: 'Token breakdown',
+  netConnecting: 'WebUI connecting…',
+  netOnline: 'WebUI connected',
+  netOffline: 'WebUI disconnected',
+  composerLabel: 'Console message input',
+  composerPlaceholder: "Enter a message…",
+  exportDiagnostics: 'Export diagnostics',
+  exportFailed: 'The diagnostics bundle could not be fetched',
+  exportConfirmTitle: 'Export diagnostics',
+  exportConfirmBody: 'The bundle contains conversations, prompts, events, tool calls, usage and run logs. Secrets in the config are redacted; everything else is written as is. Check it for private information before sharing.',
+  composerFork: 'Viewing a background session; messages sent here still go to the main session',
+  composerNoProvider: 'No usable provider. Set one up on the Model connections page.',
+  composerQueued: 'Console channel is reconnecting; message queued',
+  emptyConnecting: 'Connecting to the debug channel…',
+  ctxTitle: (total: string, max: string | null) =>
+    `Context ${total}${max !== null ? ` / ${max}` : ''} tok · click for breakdown`,
+  ctxWaiting: 'Waiting for context data',
+  sessionResetNote: 'SESSION truncated and rebuilt',
+  debugUnavailable: 'Debug channel unavailable',
+  debugNotMounted: "Debug channel unavailable; the timeline cannot be displayed.",
+
+  // status.ts
+  docTitle: (name: string) => `WebUI · ${name}`,
+  chipDisconnected: 'Disconnected',
+  chipMsgs: ' msgs',
+  chipCache: 'cache ',
+  chipBatchesPre: 'total ',
+  chipBatchesPost: ' batches',
+  chipPaused: '⏸ Paused',
+  chipBehind: (n: number) => `${n} pending delivery`,
+  chipScheduleBlocked: '◷ Delivery held',
+  chipTruncating: 'Truncating',
+  chipOnline: 'online ',
+  phaseDelivering: 'Writing events into context',
+  phaseModel: 'Waiting for model output',
+  phaseTools: 'Running tools',
+  phaseBackoff: (clock: string) => `Model call failed; retrying at ${clock}`,
+  phaseHandoff: 'Context handoff in progress',
+  phaseRound: (n: number) => `round ${n}`,
+  phaseRunning: (names: string) => `running: ${names}`,
+
+  // fork.ts
+  mainLabel: "Main session",
+  forkViewing: '◉ Viewing background session ',
+  forkInfo: (count: number, tok: string, ended: boolean, sec: number) =>
+    ` · ${count} msgs · ~${tok} tok · ` + (ended ? 'ended (frozen)' : `not ended (refreshes every ${sec} s)`),
+  forkReadOnly: 'This view is read-only; the input box still sends to the main session.',
+  forkBack: '⏎ Back to main session',
+  forkEmpty: '(This session has no messages yet)',
+  forkFetchFailed: (msg: string) => `(fetch failed: ${msg})`,
+
+  // sessions.ts
+  sessionBandTitle: "Session usage for this run",
+  sessionCache: (pct: string) => `cache ${pct}`,
+  sessionCardTitle: (
+    label: string,
+    id: string,
+    running: boolean,
+    endedAt: string,
+    prompt: number,
+    completion: number,
+    hit: number,
+  ) =>
+    `${label} (${id})\n` +
+    `${running ? 'not ended' : `ended ${endedAt}`}\n` +
+    `input ${prompt} / output ${completion} / cache hits ${hit}`,
+
+  // timeline.ts
+  jumpBottom: '↓ Back to bottom',
+  foldHead: (open: boolean, n: number) => `${open ? '▾' : '▸'} ${n} chars`,
+  ordinalTitle: (index: number) => `Item #${index} in session`,
+  userGlyphTitle: 'user message',
+  empty: '(empty)',
+  visibleReasoning: (n: number) => `Visible reasoning ${n} chars`,
+  encryptedReasoning: (n: number) => `Encrypted reasoning ${n} chars`,
+  summary: 'Summary',
+  monologTitle: (phase: string) => `assistant text${phase ? ` · ${phase}` : ''}`,
+  refusal: 'Refusal',
+  synthetic: 'synthetic',
+  encryptedPayload: (n: number) => `Encrypted payload ${n} chars`,
+  rawItems: 'Raw items',
+  headStart: 'Session head · not persisted',
+  headEnd: 'Session head · end',
+  sessionEmpty: 'session is empty',
+
+  // context.ts
+  groupPrefix: 'System prefix',
+  groupTools: 'Tools',
+  groupDialogue: 'Conversation',
+  catOrient: 'ORIENTATION',
+  catConstitution: 'CONSTITUTION',
+  catEnv: 'Environment · World',
+  catToolsUsage: 'Tool usage notes',
+  catMemory: 'MEMORY',
+  catPrefixMisc: 'Preamble / separators / structure',
+  catToolsSchema: 'Tool schemas',
+  catHead: 'Session head (synthetic)',
+  catReasoning: 'Reasoning',
+  catDialogue: 'Dialogue · events',
+  catToolIO: 'Tool calls and results',
+  ctxNone: "No context data yet.",
+  ctxUsage: 'Estimated context breakdown',
+  ctxSub: (budgetPct: string | null, keepOn: boolean) =>
+    `${budgetPct === null ? 'Budget unknown' : `${budgetPct} of budget`} · Keep past reasoning: ${keepOn ? 'on' : 'off'}`,
+  toolCount: (n: number) => ` (${n})`,
+  footCountedPre: 'The total follows the upstream count (the last call counted ',
+  footCountedPost: '; later additions are local estimates); categories are prorated from local estimates — read them as ratios only.',
+  footEstimated: 'No upstream count yet; the whole context is estimated by characters (CJK ≈ 0.6, others ≈ 0.3 token/char, +8 structural overhead per item); the upstream count takes over after the next call.',
+  footSchemaB: 'Tool schemas',
+  footSchemaPost: ' are sent as the tools parameter with every call and counted separately from messages.',
+  footStrippedPre: 'About ',
+  footStrippedPost: " tok of past reasoning is excluded from requests.",
+  footHardPre: 'Beyond ',
+  footHardPost: ' (the model input limit: context window minus reserved output) the core forces a handoff.',
+  footSoftPre: 'Persona soft threshold: ',
+  footSoftPost: (max: string) => `; stage budget ${max}.`,
+
+  // onboarding.ts
+  obWho: 'Cortico',
+  obWelcome: "Welcome to Cortico! Let's set up your first Cortico Bot.",
+  obProvider: 'First, configure a model provider:',
+  obProviderNone: 'No usable model provider yet',
+  obProviderReady: 'Model provider configured',
+  obWorlds: 'Next, enable and configure the external environments your bot reaches (Cortico Worlds). Console chat alone is a fine start.',
+  obWorldsState: (labels: readonly string[]) =>
+    `Currently ${labels.length} external environment${labels.length === 1 ? '' : 's'} enabled: ${labels.join(', ')}`,
+  obPrompts: 'Finally, the system prompt is edited here: who it is, how it behaves, how it talks.',
+  obReady: 'Ready to go!',
+  obGoConfigure: 'Configure',
+  obGoEdit: 'Edit',
+  obStart: 'Say hello?',
+};
+
+export const S = pick({
+  zh, en, 'zh-Hant': zhHant, ja, ko, fr, de, 'es-419': es419, 'pt-BR': ptBR, it, ru,
+});

@@ -1,0 +1,91 @@
+# Packages build/app (assembled by scripts/pack.ts) into a per-user Windows installer, a
+# macOS disk image and zip for the architecture of the Mac it is built on, or a Linux AppImage and deb.
+appId: ai.pal.coopanion
+productName: Coopanion
+copyright: Copyright © 2026 Pal-AI-Lab
+electronVersion: 44.4.4
+# Electron locale codes for the languages in app/i18n/index.cjs.
+electronLanguages: [en-US, zh-CN, zh-TW, ja, ko, fr, de, es-419, pt-BR, it, ru]
+directories:
+  app: build/app
+  output: dist
+# the Core child runs TypeScript sources through tsx and spawns esbuild, koffi, sherpa-onnx and pnpm: keep files unpacked
+asar: false
+npmRebuild: false
+nodeGypRebuild: false
+files:
+  - "**/*"
+# where app/updater.cjs looks for releases; with --publish never this only writes latest.yml and
+# latest-linux.yml next to the installers (and app-update.yml into the app), which the release workflow uploads
+publish:
+  provider: github
+  owner: Pal-AI-Lab
+  repo: Coopanion
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: app/icons/icon.ico
+  # the portable zip (COOPANION_CHANNEL=portable, scripts/pack.ts asks for the zip target); the installer is named under nsis
+  artifactName: Coopanion-${version}-win-${arch}-portable.${ext}
+# Asks where to install. Every file the app writes stays under that directory (data in data\),
+# so the start-menu entry, which Windows keeps under AppData, is not created.
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  include: installer/nsis.nsh
+  createDesktopShortcut: true
+  createStartMenuShortcut: false
+  shortcutName: Coopanion
+  # the installer's own pages follow the system language among these (NSIS has one Spanish, es_ES);
+  # the app's language is the app's own setting
+  installerLanguages: [en_US, zh_CN, zh_TW, ja_JP, ko_KR, fr_FR, de_DE, es_ES, pt_BR, it_IT, ru_RU]
+  multiLanguageInstaller: true
+  displayLanguageSelector: false
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  artifactName: Coopanion-Setup-${version}.exe
+# No Developer ID: the app is signed ad hoc ("-"), which Apple silicon needs to launch it at all;
+# the first open goes through Privacy & Security → Open Anyway (see the README). It lives in the
+# menu bar (LSUIElement), not the Dock; its data is in ~/Library/Application Support/Coopanion.
+mac:
+  # macOS locale folders use underscores and bare en.
+  electronLanguages: [en, zh_CN, zh_TW, ja, ko, fr, de, es_419, pt_BR, it, ru]
+  target:
+    - target: dmg
+    - target: zip
+  category: public.app-category.lifestyle
+  icon: app/icons/icon.png
+  identity: "-"
+  artifactName: Coopanion-${version}-mac-${arch}.${ext}
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  extendInfo:
+    LSUIElement: true
+    # English for every language: electron-builder has no option for per-language InfoPlist.strings
+    NSMicrophoneUsageDescription: Coo listens to you through the microphone. Speech is recognized on this Mac; recordings are not uploaded.
+    NSAppleEventsUsageDescription: While using the computer for you, Coo uses this to bring the app you name to the front.
+dmg:
+  writeUpdateInfo: false
+# x64 only. Data goes to ~/.config/Coopanion. The app runs on X11 (XWayland under Wayland, see app/main.cjs);
+# the tray needs a StatusNotifier host (most desktops have one; without it settings open from the pet's menu).
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  icon: app/icons/icon.png
+  category: Utility
+  executableName: coopanion
+  synopsis: An AI companion pet on your desktop
+  maintainer: Pal-AI-Lab <phantivia@gmail.com>
+  # ${arch} would read x86_64 for the AppImage and amd64 for the deb
+  artifactName: Coopanion-${version}-linux-x64.${ext}
+  desktop:
+    entry:
+      StartupWMClass: Coopanion
+deb:
+  # libxtst6/libxss1: the computer-use World's input and idle time; xdotool types text; zenity asks before acting
+  depends: [libgtk-3-0 | libgtk-3-0t64, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0 | libatspi2.0-0t64, libuuid1, libsecret-1-0, libasound2 | libasound2t64, xdotool, zenity]

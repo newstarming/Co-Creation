@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortico</title>
+<link rel="stylesheet" href="/web/pet.css">
+</head>
+<body>
+<div class="floor" aria-hidden="true"></div>
+<div class="stage" id="stage">
+  <!-- the body (its shadow and particles too), run by its figure pack in a sandboxed frame (body-host.js) -->
+  <div class="figure-layer" id="figureLayer"></div>
+</div>
+<div class="bubble" id="bubble" role="status" aria-live="polite" hidden></div>
+<div class="menu" id="menu" role="menu" hidden></div>
+<div class="tools" id="tools" hidden></div>
+<script type="module" src="/web/pet-app.js"></script>
+</body>
+</html>

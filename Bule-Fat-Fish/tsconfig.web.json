@@ -1,0 +1,13 @@
+{
+  // The settings window (console/): browser code. `cortico/*` is the vendored Cortico, from which it takes types only.
+  // Node types stay on: the panel contract's types import provider types whose modules import node: built-ins.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "jsx": "react-jsx"
+  },
+  "files": [],
+  "exclude": [],
+  "include": ["console/**/*.ts", "console/**/*.tsx", "core/webui/**/*.ts"]
+}

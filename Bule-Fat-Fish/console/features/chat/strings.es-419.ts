@@ -1,0 +1,56 @@
+import type { Touch } from './index.ts';
+import type { en, stepEn } from './strings.ts';
+
+export const S: Partial<typeof en> = {
+  nav: 'Chat',
+  title: 'Chat',
+  trace: 'Consola',
+  traceHint: 'La página Consola del modo avanzado: contexto, llamadas a herramientas y eventos sin procesar',
+  placeholder: (bot: string) => `Enviar mensaje a ${bot}…`,
+  connecting: 'Conectando…',
+  empty: (bot: string) => `Todavía no has dicho nada a ${bot}.`,
+  older: 'Anteriores',
+  voice: 'Voz',
+  idle: 'En reposo',
+  thinking: (bot: string) => `${bot} está pensando…`,
+  doing: (what: string) => `En curso: ${what}`,
+  retry: (at: string) => `El modelo no respondió; se reintentará a las ${at}`,
+  handoff: 'Ordenando la conversación anterior',
+  contextUsed: (used: string, limit: string) => `Unos ${used} / ${limit} tokens`,
+  contextTokens: (used: string) => `Unos ${used} tokens`,
+  contextLimit: (limit: string) => `Al llegar a ${limit} se ordena la conversación anterior`,
+  contextLast: (when: string) => `Se ordenó por última vez: ${when}`,
+  paused: 'En pausa · los mensajes llegan al reanudar',
+  queued: (bot: string) => `En cola; ${bot} lo lee después de este paso`,
+  queuedPaused: 'En pausa; se entrega al reanudar',
+  sendNow: 'Enviar ahora',
+  sendNowHint: (bot: string) => `Detener lo que ${bot} está haciendo y entregarlo ahora`,
+  withdraw: 'Retirar',
+  withdrawHint: 'De vuelta al cuadro de texto',
+  discarded: 'No se entregó: se vació la cola',
+  imageCount: (n: number) => `[${n} ${n === 1 ? 'imagen' : 'imágenes'}]`,
+  ownAnswer: 'Tu propia respuesta…',
+  send: 'Enviar',
+  computer: 'Usando la computadora',
+  steps: (n: number) => `${n} ${n === 1 ? 'paso' : 'pasos'}`,
+  things: (n: number) => `${n} ${n === 1 ? 'paso completado' : 'pasos completados'}`,
+  seconds: (s: number) => `${s} s`,
+  imagesUnseen: (bot: string) => `El modelo actual no puede ver imágenes; ${bot} solo sabe cuántas enviaste.`,
+  touch: (t: Touch, b: string): string => {
+    const out = t.crashed ? `, y ${b} quedó viendo estrellas un rato` : '';
+    switch (t.kind) {
+      case 'poke': return t.woke ? `Despertaste a ${b} con un toquecito` : t.count > 1 ? `Diste ${t.count} toquecitos a ${b}` : `Diste un toquecito a ${b}`;
+      case 'pet': return t.count > 1 ? `Acariciaste a ${b} varias veces` : `Acariciaste a ${b}`;
+      case 'throw': return `Levantaste y lanzaste a ${b}${out}`;
+      case 'drop': return `Llevaste a ${b} a otro lugar${out}`;
+      default: return `${b} cayó fuerte al suelo y quedó viendo estrellas un rato`;
+    }
+  },
+  figure: (kind: string, name: string, b: string): string => (kind === 'figure' ? `Cambiaste a ${b} por ${name}` : kind === 'dress' ? `Cambiaste el atuendo de ${b}` : `No se pudo mostrar a ${name}; se cambió a Coo`),
+};
+
+export const STEP: Partial<typeof stepEn> = {
+  pet_cua_screenshot: 'Captura de pantalla', pet_cua_click: 'Clic', pet_cua_move: 'Mover el mouse', pet_cua_drag: 'Arrastrar', pet_cua_scroll: 'Desplazar', pet_cua_type: 'Escribir',
+  pet_cua_key: 'Presionar teclas', pet_cua_windows: 'Ver ventanas', pet_cua_focus: 'Cambiar de ventana', pet_cua_wait: 'Esperar',
+  pet_move_to: 'Caminar', pet_act: 'Moverse', pet_set: 'Ajustar la configuración', pet_quiet: 'Quedarse en silencio',
+};

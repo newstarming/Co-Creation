@@ -1,0 +1,142 @@
+import type {
+  LLMProviderEntry,
+  Logger,
+  ReasoningTier,
+  ServiceTier,
+  ModelSpec,
+  ConfigGroup,
+} from '../core/types.ts';
+import type { WebUiPageContribution } from '../web/shared/webui-protocol.ts';
+import type { Language } from '../core/language.ts';
+import type { ProviderWebUiHost } from './webui/types.ts';
+import type { PriceDefinition, QuoteTime } from './pricebook.ts';
+import type { Request } from '../protocol/open-responses/index.ts';
+import type { ContextRecord } from '../protocol/open-responses/context.ts';
+import type { GenerateOptions, Generation, GenerationError, ResponseClient } from '../core/generation.ts';
+
+/** Providers expose standard Responses and own their native transport semantics. */
+export abstract class BaseProvider implements ResponseClient {
+  abstract respond(request: Request, options?: GenerateOptions): Promise<Generation>;
+}
+
+export interface ProviderHost {
+  /**
+   * 端点数据目录 <部署根>/providers/<端点名>/，内部结构由 provider 管理。
+   * 不同端点使用不同目录；同一部署根下共享该端点的部署共用目录。
+   */
+  stateDir: string;
+  repoRoot?: string;
+  resource?<T>(key: string, create: () => T): T;
+  currentEntry?(): LLMProviderEntry;
+  /** 按名字取密钥:进程环境 > 这个端点的 `.env`。 */
+  secret(name: string): string;
+  /** 按句柄取回附件字节(渲染层把附件升格成内容分片时用);读不到 → null */
+  readBlob(handle: string): Buffer | null;
+  keepThinking(): boolean;
+  log: Logger;
+}
+
+/** 传给 ProviderRegistry 的宿主；registry 按端点补充 stateDir 和对应目录的 secret 读取器。 */
+export type ProviderHostBase = Omit<ProviderHost, 'stateDir' | 'secret' | 'currentEntry' | 'resource'> & {
+  /** 同一部署根下共享的端点目录。 */
+  stateRoot: string;
+};
+
+/** One model the endpoint advertises. Optional fields are present only when the upstream states them. */
+export interface ListedModel {
+  id: string;
+  /** Label for the endpoint editor's model picker; the id stands in when absent. */
+  displayName?: string;
+  /** Context window in tokens. */
+  contextWindow?: number;
+  /** Largest completion the upstream accepts for this model, in tokens. */
+  maxOutputTokens?: number;
+  /** Whether the model takes image input; picking the model sets the endpoint's `multimodal` to this. */
+  inputImages?: boolean;
+}
+
+export interface ProviderInstance {
+  client: BaseProvider;
+  /** Models the endpoint advertises (`GET /models`). */
+  listModels?(): Promise<ListedModel[]>;
+  /** Module-owned control object; interpreted by that module's WebUI contribution. */
+  control?: unknown;
+  compatibilityKey?(): unknown;
+  start?(): Promise<unknown>;
+  stop?(): Promise<unknown>;
+  /**
+   * Context window the upstream reports for this model, in tokens. How it is detected
+   * belongs to the module (a model catalog, a server properties endpoint, a launch
+   * parameter); `undefined` until known. The core takes the minimum of this and the
+   * profile's hand-filled `contextWindow`.
+   */
+  contextWindow?(model: string): number | undefined;
+}
+
+/** 一个端点此刻能不能发起生成。判断只看本地状态,不连上游。 */
+export interface ProviderAvailability {
+  ready: boolean;
+  /** 不可用的原因,WebUI 语言;可用时不带。 */
+  reason?: string;
+}
+
+/** provider 的登录方式。 */
+export type ProviderAuth = 'api-key' | 'oauth' | 'device-code' | 'web-session';
+
+/** provider 的自描述;`pnpm describe:extension` 连同 title、description 与档位表导出成 describe.json。 */
+export interface ProviderDescribe {
+  /** 接入的协议,如 `openai-responses`、`openai-chat`、`anthropic-messages`。 */
+  protocols: readonly string[];
+  auth: readonly ProviderAuth[];
+  /** 模型在本机运行。 */
+  local: boolean;
+  input: readonly ('text' | 'image' | 'audio' | 'video')[];
+}
+
+export interface ProviderModule {
+  id: string;
+  title: string;
+  description?: string;
+  /** 自描述,给人和扩展市场看。 */
+  describe?: ProviderDescribe;
+  defaultBaseUrl?: string;
+  /** Candidate endpoint URLs offered on the URL field. Candidates only: any URL is accepted. */
+  baseUrlSuggestions?: readonly string[];
+  /** Empty = open: `reasoningEffort` accepts any non-empty string; `effortSuggestions` supplies the candidates. */
+  reasoningTiers: readonly ReasoningTier[];
+  effortSuggestions?: readonly string[];
+  serviceTiers: readonly ServiceTier[];
+  temperatureNote?: string;
+  /**
+   * WebUI copies of the title, description, tier tables and temperature note in the WebUI language.
+   * Absent (or a field left out) = the fields above are shown as written.
+   */
+  localize?(language: Language): {
+    title?: string;
+    description?: string;
+    reasoningTiers?: readonly ReasoningTier[];
+    serviceTiers?: readonly ServiceTier[];
+    temperatureNote?: string;
+  };
+  /**
+   * 这个端点还缺什么本地条件。框架先查通用条件——模型、密钥——都齐了才问模块;
+   * 除此之外没有条件的模块不实现它。
+   */
+  availability?(name: string, entry: LLMProviderEntry, language: Language): ProviderAvailability;
+  normalize?(entry: LLMProviderEntry): LLMProviderEntry;
+  /** `language` is the WebUI language for the thrown message; validation itself is fixed. */
+  validateEntry?(entry: LLMProviderEntry, language: Language): void;
+  validateModel?(entry: LLMProviderEntry, spec: ModelSpec): void;
+  accepts?(entry: LLMProviderEntry, spec: ModelSpec, mime: string): boolean;
+  config?(name: string, entry: LLMProviderEntry, language: Language): ConfigGroup[];
+  webUi?(host: ProviderWebUiHost): Partial<WebUiPageContribution>;
+  prices?(entry: LLMProviderEntry, request: Request, at: QuoteTime): readonly PriceDefinition[];
+  /**
+   * Estimate tokens for records not yet covered by upstream usage.
+   * Absent: Core uses its character-ratio estimate.
+   */
+  estimateTokens?(records: readonly ContextRecord[], spec: ModelSpec): number;
+  /** The upstream rejected a request because its input exceeded the model's context. */
+  contextOverflow?(error: GenerationError): boolean;
+  create(name: string, entry: LLMProviderEntry, host: ProviderHost): ProviderInstance;
+}

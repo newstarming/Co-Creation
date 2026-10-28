@@ -1,0 +1,135 @@
+/* 桌宠几页(开始、习惯(含电脑操作)、装扮、语音输入)与模式开关。页面标题与内容宽度同「系统提示词」,在 companion.css。只用控制台已有的颜色变量。 */
+.home-note { margin: 6px 0 0; font-size: 13px; line-height: 1.6; color: var(--muted-foreground); }
+.home-link { font-size: 13px; color: var(--accent); text-decoration: none; }
+.home-link:hover { text-decoration: underline; }
+/* 供应商:两行带标志的按钮。左列是行名,第二行折行后与冒号右边第一个按钮的左端对齐;选中的点亮 */
+.home-picker { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px 12px; align-items: start; margin: 4px 0 18px; }
+.home-pickerlabel { padding-top: 7px; font-size: 13px; color: var(--ink-soft); white-space: nowrap; }
+.home-vendors { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.home-none { padding-top: 7px; font-size: 13px; color: var(--ink-dim); }
+.home-vendor:disabled { cursor: default; }
+.home-vendor:disabled .home-vendormark:empty { display: none; }
+/* 模型、Key 与「保存并开始」:按钮与两个输入框底边对齐、同高 */
+.home-keyrow { align-items: flex-end; flex-wrap: nowrap; gap: 12px; margin-bottom: 8px; }
+.home-keyrow > label { flex: 1; min-width: 0; }
+.home-keyrow > label.home-modelfield { flex: 0 1 240px; }
+.home-keyrow input { width: 100%; }
+.home-keyrow > .btn { flex: none; height: 40px; }
+@media (max-width: 640px) { .home-picker { grid-template-columns: 1fr; } .home-pickerlabel { padding-top: 0; } .home-keyrow { flex-wrap: wrap; } }
+.home-vendor { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px 6px 8px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--ink-soft); font: inherit; font-size: 13px; cursor: pointer; transition: border-color .15s, background .15s, color .15s; }
+.home-vendor[hidden] { display: none; }
+.home-vendor:hover { border-color: var(--ink-dim); color: var(--foreground); }
+.home-vendor.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--foreground); }
+.home-vendormark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: #fff; }
+.home-vendormark svg { width: 17px; height: 17px; display: block; color: #1b1a1e; }
+/* 「我的桌宠」标题与预览之间留出距离 */
+.home-petframe { display: block; width: 100%; height: var(--fit, 420px); margin-top: 12px; border: 1px solid var(--border); border-radius: 12px; background: transparent; }
+.home-petactions { margin: 12px 0 0; gap: 8px; }
+/* 「我的桌宠」标题右边:在桌面上 / 已隐藏 */
+.sheet h3 > .pill { margin-left: 10px; vertical-align: 2px; font-weight: 400; }
+
+/* 「习惯」「装扮」页 */
+/* 「习惯」页的行:左栏名称与右栏的设置对齐在同一条基线上,说明以小字贴在设置下面 */
+.companion-row { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 0; }
+.companion-row[hidden] { display: none; }
+.companion-row.is-off > .companion-label { opacity: .5; }
+/* 名称只在空格与标点处折行，一个词比栏宽还长时才任意断开 */
+.companion-label { font-size: 14px; line-height: 1.6; color: var(--ink-soft); word-break: keep-all; overflow-wrap: anywhere; }
+.companion-label.warning { color: var(--warn); }
+.companion-control > .home-note { margin: 6px 0 0; font-size: 12.5px; line-height: 1.55; }
+/* 开关:一项设置的开与关(左栏写着是哪一项);勾选框只用于多选 */
+.companion-control > .check, .companion-switchbox > .check { gap: 10px; font-size: 14px; }
+.companion-control > .check > input, .companion-switchbox > .check > input {
+  appearance: none; flex: none; position: relative; width: 34px; height: 20px; margin: 0; border-radius: 10px;
+  background: var(--line-2); cursor: pointer; transition: background .15s;
+}
+.companion-control > .check > input::after, .companion-switchbox > .check > input::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / .3); transition: transform .15s;
+}
+.companion-control > .check > input:checked, .companion-switchbox > .check > input:checked { background: var(--accent); }
+.companion-control > .check > input:checked::after, .companion-switchbox > .check > input:checked::after { transform: translateX(14px); }
+.companion-control > .check > input:focus-visible, .companion-switchbox > .check > input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.companion-checks .check > input, .companion-popup .check > input { width: 18px; height: 18px; margin: 0; }
+/* 开关下面跟着的一行(OBS 画面的地址) */
+.companion-switchbox > .companion-rangebox { margin-top: 8px; }
+.companion-switchbox > .companion-rangebox > input { flex: 1; max-width: 320px; }
+/* 说话声的音高、语速:档位下面是自定义的数值,只在选中「自定义」时出现 */
+.companion-steps > .companion-rangebox[hidden] { display: none; }
+.companion-steps > .companion-rangebox > input[type=number] { flex: none; width: 96px; }
+/* 打字键读不了时，说明换成原因 */
+.home-note.bad { color: var(--danger); }
+/* 大小、外发光的滑杆没有文字基线:顶端对齐,左栏名称下移 4px(滑杆框上方的内边距),两者中线对齐;下面的说明不影响它 */
+.companion-row:has(.companion-scale) { align-items: start; }
+.companion-row:has(.companion-scale) > .companion-label { padding-top: 4px; }
+/* 悬停按钮的第一行是图标:左栏名称对着图标的中线 */
+.companion-row:has(.companion-hoverpick) { align-items: start; }
+.companion-row:has(.companion-hoverpick) > .companion-label { padding-top: 10px; }
+.companion-control > input { width: 100%; max-width: 320px; }
+.companion-rangebox { display: flex; align-items: center; gap: 12px; padding-top: 4px; }
+.companion-rangeval { min-width: 44px; font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.companion-rangebox > input[type=number] { width: 96px; }
+/* 大小:200% 以内是主段,分界线右边一小段到 1000%,越过分界线时这段拉长(scale-slider.ts) */
+.companion-scale { position: relative; flex: none; height: 22px; cursor: pointer; touch-action: none; outline: none; }
+.companion-scale > .cs-main, .companion-scale > .cs-tail, .companion-scale > .cs-fill { position: absolute; top: 9px; height: 4px; border-radius: 2px; }
+.companion-scale > .cs-main { left: 0; background: var(--line-2); }
+.companion-scale > .cs-tail { background: repeating-linear-gradient(90deg, var(--line-2) 0 4px, transparent 4px 7px); }
+.companion-scale > .cs-fill { left: 0; background: var(--accent); }
+.companion-scale > .cs-divider { position: absolute; top: 4px; width: 2px; height: 14px; margin-left: -1px; border-radius: 1px; background: var(--ink-dim); }
+.companion-scale > .cs-thumb { position: absolute; top: 3px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; background: var(--accent); }
+.companion-scale:focus-visible > .cs-thumb { outline: 2px solid var(--accent); outline-offset: 2px; }
+.companion-scale.past > .cs-divider { background: var(--accent); }
+/* 音效:每类一个勾选框,一行放不下就折行 */
+.companion-checks { display: flex; flex-wrap: wrap; gap: 10px 20px; }
+.companion-checks .check { gap: 8px; font-size: 14px; }
+.companion-dressframe { display: block; width: 100%; height: 900px; border: 0; background: transparent; }
+/* 悬停按钮:每个动作一个圆形开关,选中的点亮 */
+.companion-hoverpick { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 2px; }
+.companion-hoverbtn { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 64px; max-width: 96px; padding: 0; border: 0; background: none; color: var(--ink-soft); font: inherit; cursor: pointer; }
+.companion-hoverbtn svg { box-sizing: content-box; width: 20px; height: 20px; padding: 10px; border-radius: 50%; border: 1.5px dashed var(--line-2); transition: background .15s, border-color .15s, color .15s; }
+.companion-hoverbtn:hover:not(:disabled) svg { border-color: var(--ink-dim); color: var(--foreground); }
+.companion-hoverbtn.on svg { border-style: solid; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.companion-hoverbtn.on .companion-hoverlbl { color: var(--foreground); }
+.companion-hoverbtn:disabled { opacity: .4; cursor: default; }
+/* 按钮随标签加宽到 96px;日文、韩文只在空格处折行,不把一个词拆成两行 */
+.companion-hoverlbl { font-size: 12px; line-height: 1.3; word-break: keep-all; }
+/* 统计开关后面的说明链接,与开关文字隔开 */
+.companion-switchbox:has(> .companion-statsdoc) { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
+.companion-statsdoc { margin: 0; line-height: 1.6; }
+@media (max-width: 640px) { .companion-row { grid-template-columns: 1fr; gap: 4px; } }
+
+/* 左栏分组之间不画分隔线,只留间距 */
+.navgroup + .navgroup { border-top: 0; padding-top: 0; }
+
+/* 左栏底部的模式开关 */
+.companion-mode {
+  display: flex; align-items: center; gap: 10px; margin: 0 12px 8px; padding: 8px 12px 8px 14px;
+  border: 1px dashed var(--line-2); border-radius: 8px; background: transparent;
+  color: var(--ink-dim); font: inherit; font-size: 13.5px; cursor: pointer; text-align: left;
+}
+.companion-mode:hover { color: var(--ink); background: var(--sheet-2); border-style: solid; }
+/* 「回应模式」「自主配置权限」的自定义弹窗:一项一行 */
+.companion-popup { min-width: min(320px, 80vw); }
+.companion-popup .companion-checks { flex-direction: column; gap: 8px; padding: 4px 0 14px; }
+
+/* 「没找到?」那一行是连接模型卡片的最后一行:到分隔线的距离与分隔线到「我的桌宠」相同 */
+.home-links { margin-bottom: 0; }
+.featureslot-home > .sheet:has(.home-links) { padding-bottom: 0; }
+.featureslot-home > .sheet:has(.home-links) + .sheet { margin-top: 22px; }
+
+/* 第一行:在用的供应商、「测试连接」和测试结果排在一行,结果太长时在它自己的起点下换行 */
+.home-vendors.home-current { flex-wrap: nowrap; }
+.home-current > .btn { flex: none; }
+/* a long name (a service set up in the advanced mode, a long model id) is cut short, not 「测试连接」 */
+.home-current > .home-vendor { flex: 0 1 auto; min-width: 0; }
+.home-current > .home-vendor > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-current > .home-testmsg { flex: 1 1 auto; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+
+/* 开关那一行:开关没有文字基线,按基线对齐时会比左栏高一截;改为顶端对齐,开关与左栏名称同在第一行的中线上 */
+.companion-row:has(> .companion-control > .check:first-child),
+.companion-row:has(> .companion-control > .companion-switchbox:first-child),
+.companion-row:has(> .companion-control > div:first-child > .check:first-child) { align-items: start; }
+
+/* 桌宠页面画好之前不露出来,画好后淡入(frame-reveal.ts),打开「开始」「装扮」时不再黑白闪一下 */
+.home-petframe, .companion-dressframe { transition: opacity .2s ease; }
+.home-petframe.companion-frame-pending, .companion-dressframe.companion-frame-pending { opacity: 0; transition: none; }

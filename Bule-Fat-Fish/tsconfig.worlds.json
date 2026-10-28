@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "lib": ["ES2022", "DOM", "DOM.Iterable"] },
+  "include": [
+    "packages/cortico-world-desktop-pet/src/**/*.ts",
+    "packages/cortico-world-desktop-pet/tests/**/*.ts"
+  ],
+  "exclude": ["node_modules", "packages/cortico-world-desktop-pet/tests/cua/e2e"]
+}

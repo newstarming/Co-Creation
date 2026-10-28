@@ -1,0 +1,820 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dryMountWorld, fakeWorldContext } from 'cortico/extensions/dry-mount.ts';
+import { renderTemplate } from 'cortico/core/template.ts';
+import { DESKTOP_PET, desktopPetDefinition } from '../src/definition.ts';
+import { DESKTOP_PET_DEFAULTS, SELF_DEFAULT, type DesktopPetConfigSection } from '../src/config.ts';
+import { DesktopPetWorld, type DesktopPetWorldOptions, type PetBotControls } from '../src/world.ts';
+import { chatItem } from '../src/chat.ts';
+import { FakeHost } from './helpers/fake-host.ts';
+import { FakePage } from './helpers/page.ts';
+import { HOST_ENV } from '../src/window-host.ts';
+import { petText } from '../src/i18n/index.ts';
+
+const ctx = { role: 'main', log: new FakeHost().log };
+
+function makeWorld(patch: (c: DesktopPetConfigSection) => void = () => {}, extra: Partial<DesktopPetWorldOptions> = {}) {
+  const cfg = structuredClone(DESKTOP_PET_DEFAULTS);
+  cfg.enabled = true;
+  cfg.port = 0;
+  cfg.window.enabled = false;
+  cfg.asr.enabled = false;
+  patch(cfg);
+  const dir = mkdtempSync(join(tmpdir(), 'pet-'));
+  const persisted: unknown[] = [];
+  const world = new DesktopPetWorld({
+    cfg, timezone: 'Asia/Shanghai',
+    persist: (p) => { persisted.push(p); Object.assign(cfg, p); },
+    runtimesRoot: () => join(dir, 'runtimes'), modelsDir: () => join(dir, 'models'),
+    ...extra,
+  });
+  return { world, cfg, persisted };
+}
+
+const origin = (w: DesktopPetWorld) => w.petUrl.replace(/\/pet$/, '');
+const tool = (w: DesktopPetWorld, name: string) => w.tools().find((t) => t.name === name)!;
+
+let cleanup: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const fn of cleanup.reverse()) await fn();
+  cleanup = [];
+});
+
+async function mounted(patch?: (c: DesktopPetConfigSection) => void, extra?: Partial<DesktopPetWorldOptions>) {
+  const made = makeWorld(patch, extra);
+  const host = new FakeHost();
+  await made.world.start(host);
+  cleanup.push(() => made.world.stop());
+  return { ...made, host };
+}
+
+/** A local host process receives the launch URL; the test connects its page with that credential. */
+async function windowPage(world: DesktopPetWorld): Promise<FakePage> {
+  const dir = mkdtempSync(join(tmpdir(), 'pet-window-'));
+  const file = join(dir, 'url');
+  cleanup.push(async () => { rmSync(dir, { recursive: true, force: true }); });
+  const previous = process.env[HOST_ENV];
+  process.env[HOST_ENV] = JSON.stringify([process.execPath, '-e',
+    'require("node:fs").writeFileSync(process.argv[1], process.argv.find(a => a.startsWith("--pet-url=")).slice(10)); setInterval(() => {}, 1000);', '--', file]);
+  try { world.openWindow(); } finally {
+    if (previous === undefined) delete process.env[HOST_ENV];
+    else process.env[HOST_ENV] = previous;
+  }
+  await expect.poll(() => existsSync(file)).toBe(true);
+  const url = new URL(readFileSync(file, 'utf8'));
+  const key = new URLSearchParams(url.hash.slice(1)).get('key');
+  expect(key).toBeTruthy();
+  expect(world.petUrl).toBe(`${url.origin}/pet`);
+  expect(JSON.stringify(world.petState())).not.toContain(key);
+  return FakePage.open(url.origin, new URLSearchParams({ role: 'pet', host: 'window', key: key! }).toString());
+}
+
+describe('definition', () => {
+  it('passes the extension dry mount', async () => {
+    const report = await dryMountWorld(DESKTOP_PET as never, { scratchDir: mkdtempSync(join(tmpdir(), 'pet-dry-')), packageDir: fileURLToPath(new URL('../', import.meta.url)), hasWebUiClient: true });
+    expect(report.failures).toEqual([]);
+    expect(report.warnings).toEqual([]);
+  });
+});
+
+describe('English model text', () => {
+  const HAN = /\p{Script=Han}/u;
+
+  it('gives the bot no Chinese of its own: environment prompt, tool declarations, events', async () => {
+    const { world, host } = await mounted((c) => { c.user = 'Sam'; }, { modelLanguage: () => 'en', replyLanguage: () => 'Japanese', controls: { openChat: () => {} } });
+    const doc = world.webUi().promptDocs![0]!;
+    const prompt = renderTemplate(readFileSync(doc.path, 'utf8'), await world.envPromptVars());
+    expect(prompt).not.toMatch(HAN);
+    // every placeholder of the English template is one the World fills
+    expect(prompt).not.toMatch(/\{\{/);
+    expect(prompt).toContain('Japanese');
+    expect(JSON.stringify(world.tools().map(({ handler: _, ...decl }) => decl))).not.toMatch(HAN);
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    await tool(world, 'pet_ask').handler({ question: 'Tea?', options: ['yes'] }, ctx);
+    page.send({ t: 'answer', askId: (await page.next((m) => m.t === 'ask')).id, index: 0 });
+    page.send({ t: 'touch', kind: 'poke' });
+    await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(2);
+    for (const [i, e] of host.events.entries()) expect(host.stamps[i] + e.text).not.toMatch(HAN);
+  });
+});
+
+describe('tools without a page', () => {
+  it('does not install an output tap without a connected pet page', async () => {
+    const { world } = await mounted();
+    expect(world.outputTap()).toBeUndefined();
+  });
+  it('fail and say the window is not connected', async () => {
+    const { world } = await mounted();
+    const out = await tool(world, 'pet_say').handler({ script: '你好' }, ctx);
+    expect(out).toMatchObject({ failed: true });
+    expect((out as { text: string }).text).toContain('没有连接');
+  });
+});
+
+describe('computer use', () => {
+  it('switching it off ends the engine process, and the engine starts again when needed (two spawns)', async () => {
+    const { world, cfg } = await mounted((c) => { c.cua.enabled = true; });
+    type Pending = Map<number, { done: (v: unknown) => void; timer: NodeJS.Timeout }>;
+    const cua = (world as unknown as { cua: { spawn: () => unknown; pending: Pending; ready: () => Promise<void> } }).cua;
+    const engines: Array<EventEmitter & { exitCode: number | null }> = [];
+    // an engine process that reports one display and exits when disconnected
+    cua.spawn = () => {
+      const engine = Object.assign(new EventEmitter(), {
+        exitCode: null as number | null,
+        send({ id }: { id: number }) {
+          const p = cua.pending.get(id)!;
+          cua.pending.delete(id);
+          clearTimeout(p.timer);
+          p.done({ displays: [{ index: 1, primary: true, width: 1920, height: 1080 }], layout: 'one', cursor: null, foreground: null, foregroundDisplay: 1 });
+        },
+        disconnect() { engine.exitCode = 0; engine.emit('exit', 0); },
+        kill() {},
+      });
+      engines.push(engine);
+      return engine;
+    };
+    await cua.ready();
+    cfg.cua.enabled = false;
+    await expect.poll(() => engines[0]!.exitCode).toBe(0);
+    cfg.cua.enabled = true;
+    await cua.ready();
+    expect(engines).toHaveLength(2);
+  });
+});
+
+describe('with a pet page', () => {
+  it('sends the status from the run phase and tool calls, restores it in init and keeps it out of prefs changes', async () => {
+    const { world, cfg } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    expect(page.init).toMatchObject({ status: null, statusBubble: true });
+    world.onRunPhase({ state: 'model', round: 1, running: [], enteredAt: new Date().toISOString() });
+    world.outputTap()!.onEvent({
+      type: 'response.output_item.added', sequence_number: 1, output_index: 0,
+      item: { type: 'function_call', id: 'a', call_id: 'a', name: 'read_file', arguments: '', status: 'in_progress' },
+    });
+    expect(await page.next((m) => m.t === 'status' && (m.status as { kind: string })?.kind === 'work')).toEqual({ t: 'status', status: { kind: 'work', text: '在忙' } });
+    await new Promise((r) => setTimeout(r, 350));
+    expect(page.messages.some((m) => m.t === 'prefs')).toBe(false);
+    cfg.statusBubble = false;
+    expect(await page.next((m) => m.t === 'prefs')).toMatchObject({ statusBubble: false, status: { kind: 'work', text: '在忙' } });
+    const next = await FakePage.open(origin(world));
+    cleanup.push(() => next.close());
+    expect(next.init).toMatchObject({ statusBubble: false, status: { kind: 'work', text: '在忙' } });
+    world.onRunPhase({ state: 'idle', running: [], enteredAt: new Date().toISOString() });
+    expect(await next.next((m) => m.t === 'status')).toEqual({ t: 'status', status: null });
+  });
+
+  it('pet_say sends parsed beats and reports dropped markers', async () => {
+    const { world } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const out = await tool(world, 'pet_say').handler({ script: '【开心,飞】你好<眨眼>呀' }, ctx) as { text: string };
+    const say = await page.next((m) => m.t === 'say');
+    expect(say.beats).toEqual([{ actions: ['happy'], text: '你好呀', anchors: [{ at: 2, actions: ['wink'] }] }]);
+    expect(out.text).toContain('飞');
+  });
+
+  it('pet_ask delivers the chosen option as an answer event that wakes', async () => {
+    const { world, host } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    await tool(world, 'pet_ask').handler({ question: '喝什么?', options: ['茶', '咖啡', '水', '果汁'] }, ctx);
+    const ask = await page.next((m) => m.t === 'ask');
+    expect(ask.options).toEqual(['茶', '咖啡', '水']);
+    page.send({ t: 'answer', askId: ask.id, index: 1 });
+    await expect.poll(() => host.events.length).toBe(1);
+    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.answer', source: 'desktop-pet', text: '[answer] 伙伴回答「喝什么?」:选了第 2 项「咖啡」' });
+    expect(host.pushOpts[0]).toEqual({ trigger: 'flush' });
+  });
+
+  it('pet_ask reports a free answer and a dismissal', async () => {
+    const { world, host } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    await tool(world, 'pet_ask').handler({ question: 'A?', options: ['x'] }, ctx);
+    const a1 = await page.next((m) => m.t === 'ask');
+    page.send({ t: 'answer', askId: a1.id, text: '都不要' });
+    await expect.poll(() => host.events.length).toBe(1);
+    await tool(world, 'pet_ask').handler({ question: 'B?', options: ['y'] }, ctx);
+    const a2 = await page.next((m) => m.t === 'ask');
+    page.send({ t: 'answer', askId: a2.id, dismissed: true });
+    await expect.poll(() => host.events.length).toBe(2);
+    expect(host.events.map((e) => e.text)).toEqual(['[answer] 伙伴回答「A?」:自己写了:「都不要」', '[answer] 伙伴关掉了提问「B?」,没有作答。']);
+  });
+
+  it('an answer to a replaced question is ignored', async () => {
+    const { world, host } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    await tool(world, 'pet_ask').handler({ question: 'old?', options: ['x'] }, ctx);
+    const old = await page.next((m) => m.t === 'ask');
+    const out = await tool(world, 'pet_say').handler({ script: '算了' }, ctx) as { text: string };
+    expect(out.text).toContain('替换了还没回答的提问「old?」');
+    page.send({ t: 'answer', askId: old.id, index: 0 });
+    page.send({ t: 'text', text: 'ping' });
+    await expect.poll(() => host.events.length).toBe(1);
+    expect(host.events[0].type).toBe('desktop-pet.message');
+  });
+
+  it('pet_move_to waits for the page to report arrival or interruption', async () => {
+    const { world } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const arriving = tool(world, 'pet_move_to').handler({ to: 'right', run: true }, ctx);
+    const walk = await page.next((m) => m.t === 'walk');
+    expect(walk).toMatchObject({ to: .95, run: true });
+    page.send({ t: 'arrived', walkId: walk.id, x: .95 });
+    expect(await arriving).toEqual({ text: '走到了屏幕横向 95% 处。' });
+
+    const interrupted = tool(world, 'pet_move_to').handler({ to: .1 }, ctx);
+    const w2 = await page.next((m) => m.t === 'walk');
+    page.send({ t: 'interrupted', walkId: w2.id, x: .4, by: 'drag' });
+    expect(await interrupted).toEqual({ text: '没走到:走到 40% 处时被伙伴拎起来了。' });
+
+    // a body that stands off the floor says how far down it got
+    const high = tool(world, 'pet_move_to').handler({ to: .2 }, ctx);
+    const w3 = await page.next((m) => m.t === 'walk');
+    page.send({ t: 'arrived', walkId: w3.id, x: .2, y: .4 });
+    expect(await high).toEqual({ text: '走到了屏幕横向 20%,纵向 40% 处。' });
+  });
+
+  it('pet_move_to rejects a target it cannot read', async () => {
+    const { world } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    expect(await tool(world, 'pet_move_to').handler({ to: 'moon' }, ctx)).toMatchObject({ failed: true });
+  });
+
+  it("a figure's own target goes to its body with the params checked against the pack, and the bot hears of it from the prompt and on a switch", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'packs-'));
+    mkdirSync(join(root, 'robot'));
+    writeFileSync(join(root, 'robot', 'figure.json'), JSON.stringify({
+      manifest: 2, api: 2, id: 'robot', name: { zh: '机器人' }, about: { zh: '一个机器人' }, entry: 'figure.js', export: 'createBody', axes: [], presets: [],
+      vocab: [{ id: 'sit', kind: 'motion', names: { zh: ['坐下'] }, about: { zh: '折起腿' }, seconds: 1 }],
+      moves: [{ id: 'shelf', name: { zh: '书架顶' }, about: { zh: '跳上书架' }, params: [{ id: 'height', about: { zh: '跳多高' }, min: 0, max: 1 }] }],
+    }));
+    const { world } = await mounted((c) => { c.skin.figure = 'robot'; }, { packRoots: () => [root] });
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    expect((await world.envPromptVars())['pet.moves']).toContain('| shelf(书架顶) | 跳上书架 | height:0–1,跳多高 |');
+    const move = tool(world, 'pet_move_to').handler;
+    expect(await move({ to: 'shelf', params: [2] }, ctx)).toMatchObject({ failed: true });
+    expect(await move({ to: 'left', params: [1] }, ctx)).toMatchObject({ failed: true });
+    const going = move({ to: '书架顶', params: [.5], run: true }, ctx);
+    const sent = await page.next((m) => m.t === 'move');
+    expect(sent.move).toEqual({ to: 'shelf', run: true, params: { height: .5 } });
+    page.send({ t: 'interrupted', walkId: sent.id, x: .3, by: 'no-shelf' });
+    expect(await going).toEqual({ text: '没到「书架顶」(no-shelf),现在在屏幕横向 30% 处。' });
+    const receipt = (await tool(world, 'pet_set').handler({ figure: 'coo' }, ctx) as { text: string }).text;
+    expect(receipt).toContain('能去的地方变了。这些去不了了:shelf(书架顶)。');
+  });
+
+  it('pet_act forwards known actions', async () => {
+    const { world } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const out = await tool(world, 'pet_act').handler({ actions: ['跳', 'happy', 'sit', 'fly'] }, ctx) as { text: string };
+    expect((await page.next((m) => m.t === 'act')).actions).toEqual(['jump', 'happy', 'sit']);
+    expect(out.text).toContain('sit 会一直保持到下一个动作');
+    expect(out.text).toContain('fly');
+  });
+
+  it('takes the words of the body on screen: a pack\'s own, and Coo\'s once the page says the pack would not run', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'packs-'));
+    mkdirSync(join(root, 'robot'));
+    writeFileSync(join(root, 'robot', 'figure.json'), JSON.stringify({
+      manifest: 2, api: 2, id: 'robot', name: { zh: '机器人' }, about: { zh: '一个机器人' }, entry: 'figure.js', export: 'createBody', axes: [], presets: [],
+      vocab: [{ id: 'beep', kind: 'motion', names: { zh: ['哔哔'] }, about: { zh: '哔一声' }, seconds: 1 }],
+    }));
+    const { world } = await mounted((c) => { c.skin.figure = 'robot'; }, { packRoots: () => [root] });
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const act = tool(world, 'pet_act').handler;
+    await act({ actions: ['哔哔', '坐下'] }, ctx);
+    expect((await page.next((m) => m.t === 'act')).actions).toEqual(['beep']);
+    page.send({ t: 'figure', id: 'robot', ok: false, reason: 'broken' });
+    await expect.poll(async () => (await act({ actions: ['坐下'] }, ctx) as { failed?: boolean }).failed).toBeUndefined();
+    expect((await page.next((m) => m.t === 'act')).actions).toEqual(['sit']);
+  });
+
+  it('tells the bot how its words changed on a switch, without the words the new body says it does not know', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'packs-'));
+    mkdirSync(join(root, 'robot'));
+    writeFileSync(join(root, 'robot', 'figure.json'), JSON.stringify({
+      manifest: 2, api: 2, id: 'robot', name: { zh: '机器人' }, about: { zh: '一个机器人' }, entry: 'figure.js', export: 'createBody', axes: [], presets: [],
+      vocab: [
+        { id: 'sit', kind: 'motion', names: { zh: ['坐下'] }, about: { zh: '折起腿' }, seconds: 1 },
+        { id: 'beep', kind: 'motion', names: { zh: ['哔哔'] }, about: { zh: '哔一声' }, seconds: 1 },
+      ],
+    }));
+    const { world, host } = await mounted(undefined, { packRoots: () => [root] });
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const receipt = (await tool(world, 'pet_set').handler({ figure: 'robot' }, ctx) as { text: string }).text;
+    expect(receipt).toContain('happy(开心)');
+    expect(receipt).toContain('| sit | 坐下 | 折起腿 |');
+    expect(receipt).toContain('| beep | 哔哔 | 哔一声 |');
+    page.send({ t: 'figure', id: 'robot', ok: true, words: ['sit'] });
+    await expect.poll(() => host.events.length).toBe(1);
+    expect(host.events[0].text).toMatch(/\[figure\] 词表变了。这些词用不了了:beep\(哔哔\)。$/);
+    expect(await tool(world, 'pet_act').handler({ actions: ['哔哔'] }, ctx)).toMatchObject({ failed: true });
+  });
+
+  it('merges repeated pokes into one touch event', async () => {
+    const { world, host } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    for (let i = 0; i < 3; i++) page.send({ t: 'touch', kind: 'poke' });
+    await expect.poll(() => host.events.length, { timeout: 6000 }).toBe(1);
+    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.touch', text: '[touch] 伙伴戳了你 3 下' });
+    expect(host.pushOpts[0]).toEqual({ trigger: 'debounce' });
+  });
+
+  it('petting and a drop wait for the next wake; a poke wakes once until a turn ends', async () => {
+    const { world, host } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    page.send({ t: 'touch', kind: 'pet' });
+    page.send({ t: 'touch', kind: 'grab' });
+    page.send({ t: 'touch', kind: 'drop', x: 300 });
+    page.send({ t: 'touch', kind: 'poke' });
+    await expect.poll(() => host.events.length, { timeout: 6000 }).toBe(3);
+    page.send({ t: 'touch', kind: 'poke' });
+    await expect.poll(() => host.events.length, { timeout: 6000 }).toBe(4);
+    world.onTurnEnded();
+    page.send({ t: 'touch', kind: 'poke' });
+    await expect.poll(() => host.events.length, { timeout: 6000 }).toBe(5);
+    expect(host.pushOpts.map((o) => o?.trigger)).toEqual(['piggyback', 'piggyback', 'debounce', 'piggyback', 'debounce']);
+  });
+
+  it('reports a throw that ends in a crash as one event', async () => {
+    const { world, host } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    page.send({ t: 'touch', kind: 'grab' });
+    page.send({ t: 'touch', kind: 'throw', x: 300 });
+    page.send({ t: 'touch', kind: 'crash' });
+    await expect.poll(() => host.events.length, { timeout: 6000 }).toBe(1);
+    expect(host.events[0].text).toBe('[touch] 伙伴把你拎起来甩了出去,你重重落地,摔晕了一会儿');
+  });
+
+  it('sends no touch events when touch reporting is off', async () => {
+    const { world, host } = await mounted((c) => { c.touch.enabled = false; });
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    page.send({ t: 'touch', kind: 'poke' });
+    page.send({ t: 'text', text: 'hi' });
+    await expect.poll(() => host.events.length).toBe(1);
+    await new Promise((r) => setTimeout(r, 2800));
+    expect(host.events.map((e) => e.type)).toEqual(['desktop-pet.message']);
+  });
+
+  it('a skin saved from the dressing page is persisted and pushed to the pet', async () => {
+    const { world, persisted } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const skin = { ...DESKTOP_PET_DEFAULTS.skin, head: 'cat', palette: 'fox' };
+    const res = await fetch(`${origin(world)}/api/skin`, { method: 'POST', body: JSON.stringify({ skin }) });
+    expect(res.status).toBe(200);
+    expect(persisted).toContainEqual({ skin });
+    expect((await page.next((m) => m.t === 'prefs')).skin).toEqual(skin);
+  });
+
+  it('the position the page reports is written once, on stop, and the next run starts there', async () => {
+    const made = await mounted((c) => { c.rememberPosition = true; });
+    const page = await FakePage.open(origin(made.world));
+    page.send({ t: 'position', x: 0.3 });
+    page.send({ t: 'position', x: 'left' });
+    page.send({ t: 'position', x: 0.6 });
+    page.send({ t: 'text', text: 'ping' });
+    await expect.poll(() => made.host.events.length).toBe(1);
+    expect(made.persisted).toEqual([]);
+    await page.close();
+    await made.world.stop();
+    expect(made.persisted).toEqual([{ petX: 0.6 }]);
+
+    const again = await mounted((c) => { c.rememberPosition = true; c.petX = 0.6; });
+    const next = await FakePage.open(origin(again.world));
+    expect(next.init.startX).toBe(0.6);
+    await next.close();
+    await again.world.stop();
+    expect(again.persisted).toEqual([]);
+  });
+
+  it('a body standing off the floor has its height saved with its position and handed back; a body on the floor clears it', async () => {
+    const made = await mounted((c) => { c.rememberPosition = true; });
+    const page = await FakePage.open(origin(made.world));
+    page.send({ t: 'position', x: 0.3, y: 0.4 });
+    page.send({ t: 'text', text: 'ping' });
+    await expect.poll(() => made.host.events.length).toBe(1);
+    await page.close();
+    await made.world.stop();
+    expect(made.persisted).toEqual([{ petX: 0.3, petY: 0.4 }]);
+
+    const again = await mounted((c) => { c.rememberPosition = true; c.petX = 0.3; c.petY = 0.4; });
+    const next = await FakePage.open(origin(again.world));
+    expect(next.init).toMatchObject({ startX: 0.3, startY: 0.4 });
+    next.send({ t: 'position', x: 0.5 });
+    next.send({ t: 'text', text: 'ping' });
+    await expect.poll(() => again.host.events.length).toBe(1);
+    await next.close();
+    await again.world.stop();
+    expect(again.persisted).toEqual([{ petX: 0.5, petY: null }]);
+  });
+
+  it('with rememberPosition off the page gets no start position and a saved one is cleared on stop', async () => {
+    const made = await mounted((c) => { c.petX = 0.6; });
+    const page = await FakePage.open(origin(made.world));
+    expect(page.init.startX).toBeNull();
+    await page.close();
+    await made.world.stop();
+    expect(made.persisted).toEqual([{ petX: null }]);
+  });
+
+  it('a browser tab only watches while the pet window is connected', async () => {
+    const { world } = await mounted();
+    const win = await windowPage(world);
+    cleanup.push(() => win.close());
+    const tab = await FakePage.open(origin(world), 'role=pet&host=tab');
+    cleanup.push(() => tab.close());
+    await tab.next((m) => m.t === 'watching');
+    await tool(world, 'pet_act').handler({ actions: ['nod'] }, ctx);
+    await win.next((m) => m.t === 'act');
+    expect(tab.messages.some((m) => m.t === 'act')).toBe(false);
+  });
+
+  it('the window lamp is the window\'s: a browser tab standing in is only mentioned, a window that draws no figure is an error', async () => {
+    const { world } = await mounted();
+    const c = petText('zh').console;
+    const lamp = () => world.webUi().lamps![0]!;
+    const tab = await FakePage.open(origin(world), 'role=pet&host=tab');
+    cleanup.push(() => tab.close());
+    await expect.poll(() => lamp().hint).toBe(c.alsoBrowser(c.notOpen));
+    expect(lamp().state).toBe('offline');
+    const win = await windowPage(world);
+    cleanup.push(() => win.close());
+    await expect.poll(() => lamp().state).toBe('online');
+    win.send({ t: 'figure', id: 'coo', ok: false, reason: 'webgl unavailable' });
+    await expect.poll(() => lamp().state).toBe('error');
+    expect(lamp().hint).toBe(c.noBody('webgl unavailable'));
+    win.send({ t: 'figure', id: 'coo', ok: true });
+    await expect.poll(() => lamp().state).toBe('online');
+  });
+
+  it('puts the local time before each event, with the date on the first one only', async () => {
+    const { world, host } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    page.send({ t: 'text', text: 'a' });
+    await expect.poll(() => host.events.length).toBe(1);
+    page.send({ t: 'text', text: 'b' });
+    await expect.poll(() => host.events.length).toBe(2);
+    // a run that crosses midnight between the two dates the second one too
+    expect(host.stamps[0]).toMatch(/^\[\d\d-\d\d 周. \d\d:\d\d\] $/);
+    expect(host.stamps[1]).toMatch(/^\[\d\d:\d\d\] $/);
+  });
+
+  it('a watching tab still sends typed text and a theme switch, which reaches the pet window', async () => {
+    const { world, host, persisted } = await mounted();
+    const win = await windowPage(world);
+    cleanup.push(() => win.close());
+    const tab = await FakePage.open(origin(world), 'role=pet&host=tab');
+    cleanup.push(() => tab.close());
+    await tab.next((m) => m.t === 'watching');
+    tab.send({ t: 'text', text: 'hi' });
+    await expect.poll(() => host.events.length).toBe(1);
+    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.message', text: '[typed] 伙伴:hi' });
+    const theme = DESKTOP_PET_DEFAULTS.theme === 'dark' ? 'light' : 'dark';
+    tab.send({ t: 'prefs', theme });
+    expect((await win.next((m) => m.t === 'prefs')).theme).toBe(theme);
+    expect(persisted).toContainEqual({ theme });
+    expect((await (await fetch(`${origin(world)}/api/state`)).json()).theme).toBe(theme);
+  });
+
+  it('confirm resolves from the bubble without an event to the bot', async () => {
+    const { world, host } = await mounted();
+    expect(await world.confirm('可以吗?', ['可以', '不行'])).toBe('unavailable');
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const yes = world.confirm('可以吗?', ['可以', '不行']);
+    const c1 = await page.next((m) => m.t === 'confirm');
+    expect(c1).toMatchObject({ question: '可以吗?', options: ['可以', '不行'] });
+    page.send({ t: 'confirmed', id: c1.id, index: 0 });
+    expect(await yes).toBe('yes');
+    // two choices (computer use's): the second is no
+    const no = world.confirm('可以吗?', ['可以', '不行']);
+    page.send({ t: 'confirmed', id: (await page.next((m) => m.t === 'confirm')).id, index: 1 });
+    expect(await no).toBe('no');
+    const closed = world.confirm('再问一次?', ['可以', '不行']);
+    page.send({ t: 'confirmed', id: (await page.next((m) => m.t === 'confirm')).id, index: null });
+    expect(await closed).toBe('dismissed');
+    const gone = world.confirm('还在吗?', ['可以', '不行']);
+    await page.next((m) => m.t === 'confirm');
+    await page.close();
+    expect(await gone).toBe('unavailable');
+    expect(host.events).toHaveLength(0);
+  });
+
+  it('pet_set: 「以后都可以」 applies the change and stops asking about it, as the bot\'s own change', async () => {
+    let botChanges = 0;
+    const { world, persisted } = await mounted(undefined, { onBotChange: () => { botChanges++; } });
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const set = tool(world, 'pet_set').handler({ sound: false }, ctx) as Promise<{ text: string }>;
+    const c = await page.next((m) => m.t === 'confirm');
+    expect(c.options).toEqual(['可以', '以后都可以', '不用了']);
+    page.send({ t: 'confirmed', id: c.id, index: 1 });
+    expect((await set).text).toContain('音效(sound)以后不用再问');
+    expect(persisted).toContainEqual({ sound: false });
+    expect(persisted).toContainEqual({ selfAdjust: 'custom', selfAdjustCustom: { ...SELF_DEFAULT, sound: true } });
+    expect(botChanges).toBe(1);
+  });
+
+  it('dialog steps resolve from the bubble without an event to the bot', async () => {
+    const { world, host } = await mounted();
+    expect(await world.dialog({ text: '在吗?' }).answer).toEqual({ unavailable: true });
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+
+    const name = world.dialog({ text: '怎么称呼你?', actions: ['思考', '不存在'], step: [1, 5], closable: true, input: { kind: 'text', submit: '好' } });
+    const d1 = await page.next((m) => m.t === 'dialog');
+    // vocabulary words arrive as ids, unknown ones are left out
+    expect(d1).toMatchObject({ text: '怎么称呼你?', actions: ['thinking'], step: [1, 5], closable: true, input: { kind: 'text' } });
+    page.send({ t: 'dialog', id: d1.id, text: '小明' });
+    expect(await name.answer).toEqual({ text: '小明' });
+
+    const pick = world.dialog({ text: '选一个', input: { kind: 'buttons', options: [{ label: 'A' }, { label: 'B' }] } });
+    page.send({ t: 'dialog', id: (await page.next((m) => m.t === 'dialog')).id, index: 1 });
+    expect(await pick.answer).toEqual({ index: 1 });
+
+    const closed = world.dialog({ text: '跳过?', closable: true, input: { kind: 'text', submit: '好', alt: '算了' } });
+    page.send({ t: 'dialog', id: (await page.next((m) => m.t === 'dialog')).id, closed: true });
+    expect(await closed.answer).toEqual({ closed: true });
+
+    // a progress step moves with update and ends when the app closes it
+    const bar = world.dialog({ text: '下载中', input: { kind: 'progress' } });
+    const d4 = await page.next((m) => m.t === 'dialog');
+    bar.update({ progress: .5 });
+    expect(await page.next((m) => m.t === 'dialog-update')).toMatchObject({ id: d4.id, progress: .5 });
+    bar.close();
+    expect(await page.next((m) => m.t === 'dialog-close')).toMatchObject({ id: d4.id });
+    expect(await bar.answer).toEqual({ done: true });
+
+    const gone = world.dialog({ text: '还在吗?', input: { kind: 'buttons', options: [{ label: '在' }] } });
+    await page.next((m) => m.t === 'dialog');
+    await page.close();
+    expect(await gone.answer).toEqual({ unavailable: true });
+    expect(host.events).toHaveLength(0);
+  });
+
+  it('the pet panel runs the app\'s introduction when the app lends one', async () => {
+    let runs = 0;
+    const { world } = await mounted(undefined, { controls: { guide: () => { runs++; } } });
+    await world.webUi().invoke!('pet', 'guide', []);
+    expect(runs).toBe(1);
+    const bare = await mounted();
+    await expect(bare.world.webUi().invoke!('pet', 'guide', [])).rejects.toThrow('没有引导');
+  });
+
+  it('the menu header carries the bot and its run controls; clicks reach them', async () => {
+    const calls: string[] = [];
+    let paused = false;
+    const controls: PetBotControls = {
+      isPaused: () => paused,
+      setPaused: (p) => { paused = p; calls.push(p ? 'pause' : 'resume'); },
+      openSettings: () => calls.push('settings'),
+      quit: () => calls.push('quit'),
+      quitLabel: '退出 App',
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'pet-avatar-'));
+    const avatarFile = join(dir, 'avatar.png');
+    writeFileSync(avatarFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const { world } = await mounted(undefined, { botName: () => 'Bot', avatarFile, controls });
+    const res = await fetch(`${origin(world)}/api/avatar`);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    const win = await windowPage(world);
+    cleanup.push(() => win.close());
+    const tab = await FakePage.open(origin(world), 'role=pet&host=tab');
+    cleanup.push(() => tab.close());
+    const state = await (await fetch(`${origin(world)}/api/state`)).json() as { bot: Record<string, unknown> };
+    expect(state.bot).toMatchObject({
+      name: 'Bot', controls: true, buttons: { pause: true, settings: true, dress: false, quit: true }, paused: false, quitLabel: '退出 App', avatar: expect.any(String),
+    });
+    win.send({ t: 'control', action: 'pause' });
+    expect((await win.next((m) => m.t === 'prefs')).bot).toMatchObject({ paused: true });
+    tab.send({ t: 'control', action: 'settings' });
+    tab.send({ t: 'control', action: 'quit' });
+    await expect.poll(() => calls).toEqual(['pause', 'settings', 'quit']);
+  });
+
+  it('the menu header shows only the controls the app lends', async () => {
+    const calls: string[] = [];
+    const { world } = await mounted(undefined, { botName: () => 'Bot', controls: { openSettings: () => calls.push('settings') } });
+    const win = await windowPage(world);
+    cleanup.push(() => win.close());
+    const state = await (await fetch(`${origin(world)}/api/state`)).json() as { bot: Record<string, unknown> };
+    expect(state.bot).toMatchObject({ controls: true, buttons: { pause: false, settings: true, dress: false, quit: false }, paused: null, quitLabel: '', quitPrompt: '' });
+    // controls that were not lent are ignored
+    win.send({ t: 'control', action: 'pause' });
+    win.send({ t: 'control', action: 'quit' });
+    win.send({ t: 'control', action: 'settings' });
+    await expect.poll(() => calls).toEqual(['settings']);
+  });
+
+  it('rejects requests whose Host is not a loopback name', async () => {
+    const { world } = await mounted();
+    const url = new URL(origin(world));
+    const res = await new Promise<number>((done) => {
+      import('node:http').then(({ request }) => {
+        const req = request({ host: '127.0.0.1', port: url.port, path: '/api/state', headers: { host: 'evil.example' } }, (r) => done(r.statusCode ?? 0));
+        req.end();
+      });
+    });
+    expect(res).toBe(421);
+  });
+});
+
+/** A chat page connected to the World's `chat` stream: frames it got, and a way to send one. */
+function chatSocket(world: DesktopPetWorld) {
+  const frames: Array<Record<string, unknown>> = [];
+  let receive: (text: string) => void = () => {};
+  const socket = {
+    open: true,
+    send: (d: string) => { frames.push(JSON.parse(d) as Record<string, unknown>); },
+    close: () => {},
+    onMessage: (cb: (text: string) => void) => { receive = cb; },
+    onClose: () => {},
+  };
+  world.webUi().stream!('chat', socket);
+  return { frames, send: (m: Record<string, unknown>) => receive(JSON.stringify(m)), last: (t: string) => frames.filter((f) => f.t === t).at(-1) };
+}
+
+describe('chat page', () => {
+  it('a typed message waits on the page until delivered; a withdrawn one leaves the history, the pet\'s lines stay', async () => {
+    const { world, host } = await mounted(undefined, { botName: () => 'Coo' });
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const chat = chatSocket(world);
+
+    chat.send({ t: 'send', id: 1, text: '帮我看看这个报错' });
+    await expect.poll(() => chat.last('sent')).toMatchObject({ id: 1 });
+    const sent = host.events.at(-1)!;
+    expect(sent).toMatchObject({ type: 'desktop-pet.message', text: '[typed] 伙伴:帮我看看这个报错', meta: { via: 'chat' } });
+    expect(host.pushOpts.at(-1)).toEqual({ trigger: 'preempt' });
+    expect(chat.last('item')).toMatchObject({ pending: true, item: { kind: 'user', cursor: sent.cursor } });
+    world.onEventsSettled([sent], 'delivered');
+    await expect.poll(() => chat.last('settled')).toEqual({ t: 'settled', cursors: [sent.cursor], outcome: 'delivered' });
+
+    await tool(world, 'pet_say').handler({ script: '【开心】看到了' }, ctx);
+    chat.send({ t: 'send', id: 2, text: '算了不用了' });
+    await expect.poll(() => chat.last('sent')).toMatchObject({ id: 2 });
+    const second = chat.last('sent')!.cursor as number;
+    chat.send({ t: 'withdraw', cursor: second });
+    await expect.poll(() => chat.last('withdrawn')).toEqual({ t: 'withdrawn', cursor: second });
+    expect(host.withdrawn).toEqual([second]);
+
+    chat.send({ t: 'hello' });
+    await expect.poll(() => chat.last('init')).toBeDefined();
+    expect((chat.last('init')!.items as Array<Record<string, unknown>>).map((i) => i.kind === 'say' ? i.beats : i.text))
+      .toEqual(['帮我看看这个报错', [{ text: '看到了', mood: { id: 'happy', zh: '开心' } }]]);
+  });
+
+  it('the pet page gets what was sent from the chat page, to show beside Coo, and closes it when it is withdrawn', async () => {
+    const { world } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const chat = chatSocket(world);
+
+    chat.send({ t: 'send', id: 1, text: '这张截图里的报错是什么意思', images: [{ mime: 'image/png', base64: Buffer.from('png').toString('base64') }] });
+    await expect.poll(() => chat.last('sent')).toMatchObject({ id: 1 });
+    const cursor = chat.last('sent')!.cursor as number;
+    expect(await page.next((m) => m.t === 'said')).toEqual({ t: 'said', via: 'chat', text: '这张截图里的报错是什么意思', images: 1, cursor });
+
+    chat.send({ t: 'withdraw', cursor });
+    expect(await page.next((m) => m.t === 'said-withdrawn')).toEqual({ t: 'said-withdrawn', cursor });
+  });
+
+  it('images pasted into the typing box go with its text and with the draft it carries to the chat page; a batch the chat page would refuse sends nothing', async () => {
+    const { world, host } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const chat = chatSocket(world);
+    const png = { name: 'image.png', mime: 'image/png', base64: Buffer.from('png').toString('base64'), bytes: 3, width: 1, height: 1 };
+
+    page.send({ t: 'text', text: '这是什么', images: [{ mime: 'image/bmp', base64: png.base64 }] });
+    page.send({ t: 'text', text: '', images: [png] });
+    await expect.poll(() => host.events.length).toBe(1);
+    expect(host.events[0]).toMatchObject({ meta: { via: 'bubble', text: '' }, blobs: [{ mime: 'image/png', name: 'image.png' }] });
+    expect(chatItem(host.events[0]!)).toMatchObject({ kind: 'user', via: 'bubble', images: [{ mime: 'image/png' }] });
+
+    page.send({ t: 'expand', text: '还有这张', images: [png] });
+    await expect.poll(() => chat.last('draft')).toEqual({ t: 'draft', text: '还有这张', images: [png] });
+  });
+
+  it('pet_say images show on the chat page as they were when shown, live and in history', async () => {
+    const { world, host } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const chat = chatSocket(world);
+    host.mem.set('mem:blobs/cat.png', { bytes: Buffer.from('cat-before'), mime: 'image/png' });
+    const shot = host.logBlobs.put(Buffer.from('screen'), 'image/jpeg');
+
+    const out = await tool(world, 'pet_say').handler({ script: '看这个', images: ['mem:blobs/cat.png', shot] }, ctx);
+    expect(out).not.toMatchObject({ failed: true });
+    await expect.poll(() => (chat.last('item')?.item as { kind?: string } | undefined)?.kind).toBe('say');
+    const refs = ((chat.last('item')!.item as { images: Array<{ ref: string }> }).images).map((i) => i.ref);
+    expect(refs.every((r) => r.startsWith('log:'))).toBe(true);
+
+    host.mem.set('mem:blobs/cat.png', { bytes: Buffer.from('cat-after'), mime: 'image/png' });
+    chat.send({ t: 'hello' });
+    await expect.poll(() => chat.last('init')).toBeDefined();
+    const say = (chat.last('init')!.items as Array<{ kind: string; images?: Array<{ ref: string }> }>).find((i) => i.kind === 'say')!;
+    expect(say.images!.map((i) => i.ref)).toEqual(refs);
+    expect(refs.map((r) => Buffer.from(host.blob(r)!.bytes).toString())).toEqual(['cat-before', 'screen']);
+  });
+
+  it('pet_say with only images needs no pet window; an unreadable or non-image handle stores nothing', async () => {
+    const { world, host } = await mounted();
+    const shot = host.logBlobs.put(Buffer.from('screen'), 'image/png');
+    const notes = host.logBlobs.put(Buffer.from('text'), 'text/plain');
+
+    expect(await tool(world, 'pet_say').handler({ script: '', images: ['log:00000000deadbeef.png'] }, ctx)).toMatchObject({ failed: true });
+    expect(await tool(world, 'pet_say').handler({ script: '', images: [notes] }, ctx)).toMatchObject({ failed: true });
+    expect(host.stored).toHaveLength(0);
+
+    expect(await tool(world, 'pet_say').handler({ script: '', images: [shot] }, ctx)).not.toMatchObject({ failed: true });
+    await expect.poll(() => host.stored.length).toBe(1);
+    expect(chatItem(host.stored[0]!)).toMatchObject({ kind: 'say', beats: [], images: [{ mime: 'image/png' }] });
+  });
+
+  it('shows the figure and dress switches the person makes, not the ones the bot makes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'packs-'));
+    mkdirSync(join(root, 'robot'));
+    writeFileSync(join(root, 'robot', 'figure.json'), JSON.stringify({
+      manifest: 2, api: 2, id: 'robot', name: { zh: '机器人' }, about: { zh: '一个机器人' }, entry: 'figure.js', export: 'createBody', axes: [], presets: [], vocab: [],
+    }));
+    const { world } = await mounted(undefined, { packRoots: () => [root] });
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const chat = chatSocket(world);
+    const figures = () => chat.frames.filter((f) => f.t === 'item' && (f.item as { kind: string }).kind === 'figure').map((f) => (f.item as { figure: unknown }).figure);
+
+    page.send({ t: 'figure', id: 'coo', ok: true });
+    await tool(world, 'pet_set').handler({ figure: 'robot' }, ctx);
+    page.send({ t: 'figure', id: 'robot', scheme: '', ok: true });
+    page.send({ t: 'figure', id: 'robot', scheme: 'b', ok: true });
+    page.send({ t: 'figure', id: 'coo', ok: true });
+    page.send({ t: 'figure', id: 'robot', ok: false, reason: 'broken' });
+    await expect.poll(figures).toHaveLength(3);
+    const robot = { zh: '机器人', id: 'robot' };
+    expect(figures()).toEqual([{ kind: 'dress', name: robot }, { kind: 'figure', name: expect.objectContaining({ id: 'coo' }) }, { kind: 'failed', name: robot }]);
+  });
+
+  it('an interrupt stops pet_move_to where the pet stands', async () => {
+    const { world } = await mounted();
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    expect(tool(world, 'pet_move_to').interruptible).toBe(true);
+    const stop = new AbortController();
+    const walking = tool(world, 'pet_move_to').handler({ to: 'left' }, { ...ctx, signal: stop.signal });
+    const walk = await page.next((m) => m.t === 'walk');
+    stop.abort();
+    expect(await page.next((m) => m.t === 'walk-stop')).toMatchObject({ id: walk.id });
+    page.send({ t: 'interrupted', walkId: walk.id, x: .4, by: 'idle' });
+    expect(await walking).toEqual({ text: '走到屏幕横向 40% 处停下了。' });
+  });
+});
+
+describe("the bot's name", () => {
+  it('is read at each use: a rename reaches the menu header and an open chat page without a restart', async () => {
+    let name = 'Coo';
+    const def = desktopPetDefinition({ botName: () => name });
+    const wctx = fakeWorldContext(def, { scratchDir: mkdtempSync(join(tmpdir(), 'pet-name-')) });
+    Object.assign(wctx.cfg, { enabled: true, port: 0 });
+    wctx.cfg.window.enabled = false;
+    wctx.cfg.asr.enabled = false;
+    const world = def.create(wctx) as DesktopPetWorld;
+    await world.start(new FakeHost());
+    cleanup.push(() => world.stop());
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    expect(page.init.bot).toMatchObject({ name: 'Coo' });
+    const chat = chatSocket(world);
+    chat.send({ t: 'hello' });
+    await expect.poll(() => chat.last('init')?.bot).toBe('Coo');
+
+    name = 'Mochi';
+    // throws when no prefs frame with the new name arrives
+    await page.next((m) => m.t === 'prefs' && (m.bot as { name?: unknown }).name === 'Mochi');
+    await expect.poll(() => chat.last('bot')).toEqual({ t: 'bot', bot: 'Mochi' });
+    chat.send({ t: 'hello' });
+    await expect.poll(() => chat.last('init')?.bot).toBe('Mochi');
+  });
+});

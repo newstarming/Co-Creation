@@ -1,0 +1,121 @@
+/* Embedded in the settings window the page grows to its content (appearance.js reports the height), so the
+   window scrolls it with its own scrollbar; opened on its own it scrolls as any page */
+html:has(body.dress-page){overflow:auto; height:auto}
+body.dress-page{
+  overflow:visible; height:auto; min-height:100%; background:var(--bg); color:var(--text);
+  padding:16px;
+}
+:root[data-embedded] body.dress-page{min-height:0; padding:0 0 2px; background:transparent}
+:root[data-embedded]:has(body.dress-page){overflow:hidden}
+/* The host console chooses the editor surface's light/dark and lends its accent (--host-accent). */
+:root[data-ui-theme="light"] body.dress-page{
+  color-scheme:light;
+  --bg:#F3F2F6; --surface:#FFFFFF; --text:#1B1626; --muted:#6A6577; --line:#E2DFE8; --accent:var(--host-accent, #00A870);
+}
+:root[data-ui-theme="dark"] body.dress-page{
+  color-scheme:dark;
+  --bg:#0D1117; --surface:#151A22; --text:#E9EDF2; --muted:#8C95A3; --line:#252C37; --accent:var(--host-accent, #2FD59B);
+}
+.dress-page main{--swatch-bg:#E8E6EE}
+:root[data-theme="dark"] .dress-page main{--swatch-bg:#10151C}
+/* the preview across the top, as on the 开始 page (the same wall, floor and night/day button, stage.js); the choices below */
+.dress-page main{display:flex; flex-direction:column; gap:20px}
+.preview{
+  position:relative; height:300px; border-radius:12px; overflow:hidden; border:1px solid var(--line);
+  background-color:var(--wall); background-image:radial-gradient(var(--dot) 1.2px, transparent 1.3px); background-size:22px 22px;
+}
+.preview .floor{position:absolute; left:0; right:0; bottom:0; height:48px; background:var(--surface); border-top:1px solid var(--line)}
+/* only the preview takes the pet's night/day (dress.js puts it on #preview); the page around it follows the settings window */
+.preview{--wall:#E8E6EE; --dot:#CFCBD9; --surface:#FFFFFF; --text:#1B1626; --muted:#6A6577; --line:#E2DFE8; --shadow:rgba(27,22,38,.12)}
+.preview[data-theme="dark"]{--wall:#10151C; --dot:#232B37; --surface:#151A22; --text:#E9EDF2; --muted:#8C95A3; --line:#252C37; --shadow:rgba(0,0,0,.32)}
+.preview .saved{position:absolute; top:16px; right:14px; margin:0; font-size:12.5px; color:var(--muted)}
+.dress{display:grid; grid-template-columns:minmax(4.5em, max-content) 1fr; gap:12px 14px; align-items:start}
+.dress .row-label{font-size:14px; color:var(--muted); padding-top:18px}
+.opts{display:flex; flex-wrap:wrap; gap:8px}
+.opt{
+  font:inherit; cursor:pointer; width:min-content; min-width:72px; display:flex; flex-direction:column; align-items:center; gap:2px;
+  padding:8px 4px 6px; border-radius:10px; border:1px solid var(--line); background:var(--surface); color:var(--text);
+  transition:border-color .15s, background-color .15s;
+}
+.opt:hover{border-color:var(--accent)}
+.opt[aria-pressed="true"]{border-color:var(--accent); background:color-mix(in srgb, var(--accent) 14%, var(--surface))}
+.opt svg{width:52px; height:52px; display:block; background:var(--swatch-bg); border-radius:6px}
+.opt span{font-size:12.5px}
+.swatch svg{--skin-ink:var(--sl-ink); --skin-eye:var(--sl-eye)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .swatch svg{--skin-ink:var(--sd-ink); --skin-eye:var(--sd-eye)}}
+:root[data-theme="dark"] .swatch svg{--skin-ink:var(--sd-ink); --skin-eye:var(--sd-eye)}
+.slot{display:flex; flex-direction:column; gap:10px; min-width:0}
+.cmap{display:flex; flex-wrap:wrap; gap:8px 22px; align-items:center}
+.cm-group{display:flex; flex-wrap:wrap; align-items:center; gap:6px}
+.cm-label{font-size:12.5px; color:var(--muted); margin-right:2px}
+.dot{--dot-c:var(--dl); width:22px; height:22px; border-radius:50%; padding:0; cursor:pointer; border:0; background:var(--dot-c); box-shadow:0 0 0 1px var(--line)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .dot{--dot-c:var(--dd)}}
+:root[data-theme="dark"] .dot{--dot-c:var(--dd)}
+.dot.linked{background:transparent; border:5px solid var(--skin-ink); box-shadow:none}
+.dot.linked.eye{border-color:var(--skin-eye)}
+.dot[aria-pressed="true"]{box-shadow:0 0 0 2px var(--bg), 0 0 0 4px var(--text)}
+button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+/* Coo's palette and accessories, or the whale's colour schemes, whichever body is chosen */
+.dress:not([data-figure="coo"]) .coo-only{display:none}
+.opt img{width:52px; height:52px; display:block; background:var(--swatch-bg); border-radius:6px; object-fit:cover}
+.opt.wide{width:92px}
+.opt.wide span{font-size:11.5px; text-align:center; line-height:1.25}
+.opt.figure{width:116px}
+.opt.figure span{font-size:12.5px; white-space:nowrap}
+@media (max-width:640px){
+  .preview{height:240px}
+  .dress{grid-template-columns:1fr; gap:6px}
+  .dress .row-label{padding-top:6px}
+  .opt{min-width:64px}
+  .opt svg, .opt img{width:46px; height:46px}
+}
+/* importing packs: the tile after the figures, the problems under them, the dialog, the drop hint */
+.opt.import{border-style:dashed}
+.opt.import svg path{fill:none; stroke:var(--muted); stroke-width:1.6px; stroke-linecap:round; vector-effect:non-scaling-stroke}
+.opt.import:hover svg path{stroke:var(--accent)}
+.pack-problems{font-size:12.5px; color:var(--muted)}
+.pack-problems summary{cursor:pointer}
+.pack-problems ul{margin:6px 0 0; padding-left:18px}
+.pack-problems li{margin:3px 0; overflow-wrap:anywhere}
+.pack-problems b{color:var(--text); font-weight:600}
+/* embedded, the frame is as tall as the page: the dialog opens near the top, where the 「导入」 tile is, not in the frame's middle */
+:root[data-embedded] dialog.import{margin-top:24px}
+dialog.import{
+  width:min(520px, calc(100vw - 32px)); max-height:calc(100vh - 32px); overflow:auto; padding:18px 20px;
+  border:1px solid var(--line); border-radius:14px; background:var(--surface); color:var(--text); box-shadow:0 12px 40px var(--shadow);
+}
+dialog.import::backdrop{background:rgba(0,0,0,.35)}
+dialog.import h2{font-size:16px; margin:0 0 10px}
+dialog.import .lead{font-size:13.5px; line-height:1.6; margin:0 0 14px}
+dialog.import .meta{font-size:12.5px; color:var(--muted); margin:0}
+dialog.import .warn{font-size:12.5px; color:var(--anger); margin:4px 0 0; overflow-wrap:anywhere}
+dialog.import .again{font-size:12.5px; color:var(--accent)}
+dialog.import .choices{display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px}
+dialog.import .actions{display:flex; justify-content:flex-end; gap:8px; margin-top:16px}
+dialog.import .found{list-style:none; margin:0; padding:0; display:grid; gap:8px}
+dialog.import .found label{display:grid; grid-template-columns:auto 52px 1fr; gap:10px; align-items:start; padding:10px; border:1px solid var(--line); border-radius:10px; cursor:pointer}
+dialog.import .found input{margin:4px 0 0}
+dialog.import .found img, dialog.import .nopic{width:52px; height:52px; display:block; border-radius:6px; background:var(--swatch-bg, var(--bg)); object-fit:cover}
+dialog.import .info{display:flex; flex-direction:column; gap:2px; min-width:0}
+dialog.import .info b{font-size:14px}
+dialog.import details{font-size:12px; color:var(--muted); margin-top:2px}
+dialog.import details p{margin:2px 0; overflow-wrap:anywhere}
+dialog.import .cant{margin-top:10px}
+.btn{font:inherit; font-size:13.5px; cursor:pointer; padding:7px 14px; border-radius:9px; border:1px solid var(--line); background:var(--surface); color:var(--text)}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent); border-color:var(--accent); color:var(--surface)}
+.btn:disabled{opacity:.5; cursor:default}
+.drop-hint{position:fixed; inset:8px; z-index:10; display:grid; place-items:center; pointer-events:none; border:2px dashed var(--accent); border-radius:14px; background:color-mix(in srgb, var(--bg) 82%, transparent)}
+.drop-hint[hidden]{display:none}
+.drop-hint p{font-size:16px; margin:0}
+/* uninstalling: the trash in an installed pack's tile corner, shown on hover or focus; the dialog asks */
+.figure-tile{position:relative; display:flex}
+.pack-erase{
+  position:absolute; top:6px; right:6px; display:grid; place-items:center; width:24px; height:24px; padding:0;
+  border:0; border-radius:6px; background:none; color:var(--muted); cursor:pointer;
+  opacity:0; pointer-events:none; transition:opacity .14s ease, color .14s ease;
+}
+.figure-tile:hover .pack-erase, .figure-tile:focus-within .pack-erase{opacity:1; pointer-events:auto}
+.pack-erase:hover{color:var(--anger)}
+.pack-erase svg{width:16px; height:16px; display:block}
+.btn.danger{background:var(--anger); border-color:var(--anger); color:#fff}

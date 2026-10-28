@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Coopanion overlay</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  /* the canvas is the pet window's size; it scales to the browser source and keeps its proportions */
+  canvas { display: block; width: 100vw; height: 100vh; object-fit: contain; }
+</style>
+</head>
+<body>
+<canvas id="layer" width="1" height="1"></canvas>
+<script type="module" src="/web/overlay.js"></script>
+</body>
+</html>

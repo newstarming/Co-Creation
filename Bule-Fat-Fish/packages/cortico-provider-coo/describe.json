@@ -1,0 +1,45 @@
+{
+  "provider": {
+    "protocols": [
+      "openai-responses",
+      "openai-chat",
+      "anthropic-messages",
+      "gemini"
+    ],
+    "auth": [
+      "api-key"
+    ],
+    "local": false,
+    "input": [
+      "text",
+      "image"
+    ],
+    "title": "Coo Pet Provider",
+    "description": "DeepSeek, Qwen, Kimi, GLM, Doubao, MiniMax, StepFun, Baidu Qianfan, OpenRouter, OpenAI, Anthropic, Gemini and xAI.",
+    "reasoningTiers": [
+      {
+        "id": "off",
+        "label": "No thinking",
+        "thinking": false
+      },
+      {
+        "id": "low",
+        "label": "Thinking · fast",
+        "thinking": true,
+        "effort": "low"
+      },
+      {
+        "id": "high",
+        "label": "Thinking · standard",
+        "thinking": true,
+        "effort": "high"
+      },
+      {
+        "id": "max",
+        "label": "Thinking · deepest",
+        "thinking": true,
+        "effort": "max"
+      }
+    ]
+  }
+}

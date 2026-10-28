@@ -1,0 +1,116 @@
+import { pick } from '../core/language.ts';
+import { S as zhHant } from './strings.zh-Hant.ts';
+import { S as ja } from './strings.ja.ts';
+import { S as ko } from './strings.ko.ts';
+import { S as fr } from './strings.fr.ts';
+import { S as de } from './strings.de.ts';
+import { S as es419 } from './strings.es-419.ts';
+import { S as ptBR } from './strings.pt-BR.ts';
+import { S as it } from './strings.it.ts';
+import { S as ru } from './strings.ru.ts';
+
+const zh = {
+  // index.ts
+  groupPersonas: 'Persona & Memory',
+  groupWorlds: 'World',
+  moduleInstancesAria: 'World 实例',
+  navAria: 'WebUI 导航',
+  runResume: '继续运行',
+  runPause: '暂停运行',
+  runStateRunning: '运行中',
+  runStatePaused: '已暂停',
+  runUnavailable: '运行控制不可用',
+  shutdownAria: '关机',
+  settingsAria: '设置',
+  settingsTitle: '设置',
+  finishing: '正在关闭…',
+  shutdownTitle: '关机',
+  shutdownBody: '进程将退出，WebUI 连接将断开。',
+  confirmShutdownTitle: '⚠ 关机',
+  confirmShutdownAgainTitle: '⚠⚠ 确认关机?',
+  confirmShutdownAgainBody: '停止运行并退出进程？',
+  finishingToast: '正在关闭…',
+  stepIncomplete: '未完成',
+  doneShutdown: '已关机',
+  resultLocalIncomplete: '本地关闭步骤未全部完成',
+  resultExternalUnverified: '本地已关机,外部状态未确认',
+  resultUnverified: '关闭步骤已执行，状态未确认',
+  resultDefault: '关闭步骤已执行。',
+  noReceipt: (msg: string) =>
+    `未收到关闭结果（${msg}）；进程可能已退出。详情见当前运行的 data/runs/<run>/log.jsonl 中的 shutdown 记录。`,
+  docTitle: (name: string) => `WebUI · ${name}`,
+  renameTitle: '点击改名',
+  renameSaved: '展示名已保存',
+  renameFailed: (msg: string) => `展示名没保存成:${msg}`,
+  releaseUpdate: (latest: string, current: string) => `Cortico ${latest} 已发布(当前 ${current})`,
+  // avatar.ts
+  changeAvatar: '更换 bot 头像',
+  uploadAvatar: '上传并裁剪 bot 头像',
+  unreadable: '无法读取这张图片',
+  cropPreview: '头像裁剪预览',
+  zoomAria: '头像缩放',
+  zoom: '缩放',
+  note: '拖动图片调整位置，滚动鼠标滚轮或使用滑杆缩放；保存后写入 bot 根目录的 avatar.png。',
+  cancel: '取消',
+  save: '保存头像',
+  cropTitle: '裁剪头像',
+  noCanvas: '浏览器无法创建图片画布',
+  saved: '头像已保存',
+  // ../main.ts
+  featureLoadFailed: (label: string) => `「${label}」没能加载`,
+};
+
+export const en: typeof zh = {
+  // index.ts
+  groupPersonas: 'Persona & Memory',
+  groupWorlds: 'World',
+  moduleInstancesAria: 'World instances',
+  navAria: 'WebUI navigation',
+  runResume: 'Resume',
+  runPause: 'Pause',
+  runStateRunning: 'Running',
+  runStatePaused: 'Paused',
+  runUnavailable: 'Run control unavailable',
+  shutdownAria: 'Shut down',
+  settingsAria: 'Settings',
+  settingsTitle: 'Settings',
+  finishing: 'Shutting down…',
+  shutdownTitle: 'Shut down',
+  shutdownBody: 'The process will exit and disconnect the WebUI.',
+  confirmShutdownTitle: '⚠ Shut down',
+  confirmShutdownAgainTitle: '⚠⚠ Confirm shutdown?',
+  confirmShutdownAgainBody: 'Stop running and exit the process?',
+  finishingToast: 'Shutting down…',
+  stepIncomplete: 'incomplete',
+  doneShutdown: 'Shut down',
+  resultLocalIncomplete: 'Local shutdown steps incomplete',
+  resultExternalUnverified: 'Shut down locally; external state unverified',
+  resultUnverified: 'Shutdown steps executed; state unverified',
+  resultDefault: 'Shutdown steps executed.',
+  noReceipt: (msg: string) =>
+    `No shutdown result received (${msg}); the process may have exited. See the shutdown records in data/runs/<run>/log.jsonl for the current run.`,
+  docTitle: (name: string) => `WebUI · ${name}`,
+  renameTitle: 'Click to rename',
+  renameSaved: 'Display name saved',
+  renameFailed: (msg: string) => `Display name not saved: ${msg}`,
+  releaseUpdate: (latest: string, current: string) => `Cortico ${latest} released (running ${current})`,
+  // avatar.ts
+  changeAvatar: 'Change bot avatar',
+  uploadAvatar: 'Upload and crop the bot avatar',
+  unreadable: 'Could not read this image',
+  cropPreview: 'Avatar crop preview',
+  zoomAria: 'Avatar zoom',
+  zoom: 'Zoom',
+  note: 'Drag the image to reposition; use the mouse wheel or the slider to zoom. Saving writes avatar.png to the bot root directory.',
+  cancel: 'Cancel',
+  save: 'Save avatar',
+  cropTitle: 'Crop avatar',
+  noCanvas: 'The browser could not create an image canvas',
+  saved: 'Avatar saved',
+  // ../main.ts
+  featureLoadFailed: (label: string) => `"${label}" failed to load`,
+};
+
+export const S = pick({
+  zh, en, 'zh-Hant': zhHant, ja, ko, fr, de, 'es-419': es419, 'pt-BR': ptBR, it, ru,
+});

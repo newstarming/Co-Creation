@@ -1,0 +1,108 @@
+import { pick, type Language } from '../../core/language.ts';
+import { text as zhHant, panel as panelZhHant } from './strings.zh-Hant.ts';
+import { text as ja, panel as panelJa } from './strings.ja.ts';
+import { text as ko, panel as panelKo } from './strings.ko.ts';
+import { text as fr, panel as panelFr } from './strings.fr.ts';
+import { text as de, panel as panelDe } from './strings.de.ts';
+import { text as es419, panel as panelEs419 } from './strings.es-419.ts';
+import { text as ptBR, panel as panelPtBR } from './strings.pt-BR.ts';
+import { text as it, panel as panelIt } from './strings.it.ts';
+import { text as ru, panel as panelRu } from './strings.ru.ts';
+
+/** Server side: module description, ConfigGroup titles, panel titles and validation errors. */
+const zh = {
+  description: '连接兼容 Responses API 的模型服务。',
+  extraHeaders: '附加请求头（JSON object）',
+  extraBody: '附加请求体（JSON object）',
+  endpointPath: 'Responses 端点路径',
+  endpointPathDescription: '相对供应地址;默认 /responses。',
+  endpointPathSlash: '端点路径必须以 / 开头',
+  extraHeadersObject: '附加请求头必须是字符串到字符串的对象',
+  extraBodyObject: '附加请求体字段必须是对象',
+  reasoningReplay: '思维链回传形态',
+  reasoningReplayDescription: '加密回签名块,明文回推理文字;上游接受哪种由端点决定,不确定就探测。',
+  reasoningReplayValue: '思维链回传形态只能是 encrypted 或 plaintext',
+  syntheticReasoningText: '合成推理填充',
+  syntheticReasoningTextDescription: (fallback: string) =>
+    `明文回传时,没有记录来源的工具调用前补的那一段推理,模型会读到。留空用默认「${fallback}」;端点拒收空串与全空白。`,
+  syntheticReasoningTextValue: '合成推理填充不能是空串或全空白:端点会拒收整条请求',
+  sendSyntheticReasoning: '填充合成推理',
+  sendSyntheticReasoningDescription: '关闭后不再填充。要求每个工具调用前都带推理的端点会拒收请求(400)。',
+  reasoningPanel: '思维链',
+  reasoningPanelDescription: '思维链回传给上游的形态。',
+  bodyRequired: '需要请求体',
+  instanceNameRequired: '需要端点名',
+  unknownPanel: '未知面板',
+  unknownMethod: '未知操作',
+  modelRequired: '先选模型',
+  thinkingOff: '这条端点关着思维链,回传形态无关',
+  title: "OpenAI Responses 兼容",
+};
+export const en: typeof zh = {
+  description: 'Connect to Responses-compatible model services.',
+  extraHeaders: 'Extra headers (JSON object)',
+  extraBody: 'Extra request body (JSON object)',
+  endpointPath: 'Responses endpoint path',
+  endpointPathDescription: 'Relative to the provider URL; default /responses.',
+  endpointPathSlash: 'The endpoint path must start with /',
+  extraHeadersObject: 'Extra headers must be an object of strings',
+  extraBodyObject: 'Extra body fields must be an object',
+  reasoningReplay: 'Reasoning replay',
+  reasoningReplayDescription: 'Encrypted sends back the signed block; plaintext sends back the reasoning text. Which one is accepted depends on the endpoint; test it when unsure.',
+  reasoningReplayValue: 'Reasoning replay must be encrypted or plaintext',
+  syntheticReasoningText: 'Synthetic reasoning text',
+  syntheticReasoningTextDescription: (fallback: string) =>
+    `In plaintext replay, the reasoning sent before a tool call with no recorded origin; the model reads it. Empty uses the default "${fallback}"; endpoints reject an empty or blank string.`,
+  syntheticReasoningTextValue: 'Synthetic reasoning text cannot be empty or blank: the endpoint rejects the whole request',
+  sendSyntheticReasoning: 'Send synthetic reasoning',
+  sendSyntheticReasoningDescription: 'When off, none is sent. Endpoints that require reasoning before every tool call reject the request (400).',
+  reasoningPanel: 'Reasoning',
+  reasoningPanelDescription: 'The form in which reasoning is sent back to the endpoint.',
+  bodyRequired: 'Request body required',
+  instanceNameRequired: 'Endpoint name required',
+  unknownPanel: 'Unknown panel',
+  unknownMethod: 'Unknown method',
+  modelRequired: 'Choose a model first',
+  thinkingOff: 'Reasoning is off on this endpoint; the replay form does not apply',
+  title: "OpenAI Responses Compatible",
+};
+export type Text = typeof zh;
+export const text = (language: Language) => pick(language, {
+  zh, en, 'zh-Hant': zhHant, ja, ko, fr, de, 'es-419': es419, 'pt-BR': ptBR, it, ru,
+});
+
+/** Client side: the reasoning section of the endpoint page. */
+const panelZh = {
+  title: '思维链',
+  encrypted: '加密',
+  plaintext: '明文',
+  detect: '我不知道,测一下',
+  detecting: '探测中',
+  saved: '已保存',
+  accepted: '通过',
+  rejected: (status: number | null, error: string) => `被拒${status ? ` ${status}` : ''}:${error}`,
+  skipped: '未测',
+  outcome: (bare: string, withReasoning: string) => `不带思维链的合成调用:${bare};带明文思维链:${withReasoning}`,
+  applied: (label: string) => `已设为${label}`,
+  undetermined: '判断不出,设置未改',
+  detected: (outcome: string, conclusion: string) => `${outcome}。${conclusion}`,
+};
+export const panelEn: typeof panelZh = {
+  title: 'Reasoning',
+  encrypted: 'Encrypted',
+  plaintext: 'Plaintext',
+  detect: 'Not sure, test it',
+  detecting: 'Testing',
+  saved: 'Saved',
+  accepted: 'accepted',
+  rejected: (status: number | null, error: string) => `rejected${status ? ` ${status}` : ''}: ${error}`,
+  skipped: 'not tested',
+  outcome: (bare: string, withReasoning: string) => `Synthetic call without reasoning: ${bare}; with plaintext reasoning: ${withReasoning}`,
+  applied: (label: string) => `Set to ${label}`,
+  undetermined: 'Undetermined; the setting is unchanged',
+  detected: (outcome: string, conclusion: string) => `${outcome}. ${conclusion}`,
+};
+export const panel = {
+  zh: panelZh, en: panelEn, 'zh-Hant': panelZhHant, ja: panelJa, ko: panelKo, fr: panelFr,
+  de: panelDe, 'es-419': panelEs419, 'pt-BR': panelPtBR, it: panelIt, ru: panelRu,
+};

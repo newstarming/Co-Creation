@@ -1,0 +1,770 @@
+/**
+ * 扩展层:`extensions/` 下的包按 package.json 逐个真 import,失败只废自己那一格;
+ * 并进 bot 定义时补 `worlds` 默认值。装卸经 pnpm——这里只验它收到的命令行与磁盘对账,
+ * pnpm 本体不跑(那要联网)。
+ *
+ * 按 kind 分派、契约版本、provider 形状与浏览器端产物在 tests/extensions-manifest.test.ts;
+ * 扩展 import 框架的那条解析线在 tests/extensions-runtime.test.ts。
+ */
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { EXTENSIONS_DIR_ENV, ExtensionManager, extensionsDir, loadExtensions, readInstalled, repositoryWebUrl, type ExtensionSet } from '../src/extensions.ts';
+import { EXTENSION_API_VERSIONS } from '../src/extensions/manifest.ts';
+import { PREVIOUS_CONTRACT_VERSIONS } from '../src/extensions/previous-contract.ts';
+import { repoRoot } from '../src/paths.ts';
+
+let root: string;
+beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'extensions-')); });
+afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+const definitionSource = (id: string): string =>
+  `export default { id: ${JSON.stringify(id)}, label: ${JSON.stringify(`${id} 扩展`)}, `
+  + `defaults: () => ({ enabled: false, port: 7 }), `
+  + `create: () => ({ id: ${JSON.stringify(id)}, envPromptVars: () => ({}), tools: () => [], start: async () => {}, stop: async () => {} }) };`;
+
+/** 往 extensions/ 里"装"一个包:写进 package.json 的 dependencies,并在 node_modules 下放上文件。 */
+function installFake(name: string, opts: {
+  spec?: string; body?: string; pkg?: Record<string, unknown>; noFiles?: boolean;
+} = {}): void {
+  const dir = join(root, 'extensions');
+  mkdirSync(dir, { recursive: true });
+  const pkgFile = join(dir, 'package.json');
+  const pkg: { name?: string; private?: boolean; dependencies: Record<string, string> } = existsSync(pkgFile)
+    ? JSON.parse(readFileSync(pkgFile, 'utf8')) as { dependencies: Record<string, string> }
+    : { name: 'cortico-extensions', private: true, dependencies: {} };
+  pkg.dependencies[name] = opts.spec ?? '^1.0.0';
+  writeFileSync(pkgFile, JSON.stringify(pkg));
+  if (opts.noFiles) return;
+  const pkgDir = join(dir, 'node_modules', ...name.split('/'));
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+    name, version: '1.2.3', type: 'module', main: './index.js',
+    keywords: ['cortico-world'], cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world },
+    ...(opts.pkg ?? {}),
+  }));
+  writeFileSync(join(pkgDir, 'index.js'), opts.body ?? definitionSource('x'));
+}
+
+describe('loadExtensions', () => {
+  it('extensions/ 不存在 → 空集,不报错', async () => {
+    const set = await loadExtensions(root);
+    expect(set.records).toEqual([]);
+    expect(set.worlds).toEqual([]);
+    expect(set.providers).toEqual([]);
+    expect(set.webUiAssets).toEqual([]);
+    expect(set.dir).toBe(join(root, 'extensions'));
+  });
+
+  it('合法的包加载成 World 定义;记录带版本、 World id 与显示名', async () => {
+    installFake('@acme/cortico-world-alpha', { body: definitionSource('alpha'), pkg: { description: '甲' } });
+    const set = await loadExtensions(root);
+    expect(set.worlds.map((m) => m.id)).toEqual(['alpha']);
+    expect(set.records).toEqual([{
+      name: '@acme/cortico-world-alpha', spec: '^1.0.0', version: '1.2.3', description: '甲',
+      kind: 'world', api: EXTENSION_API_VERSIONS.world, webUiClient: false, webUi: 'none',
+      loaded: true, worldId: 'alpha', label: 'alpha 扩展',
+    }]);
+    // 定义是活的:defaults / create 都能调
+    expect(set.worlds[0].defaults()).toEqual({ enabled: false, port: 7 });
+    expect(set.worlds[0].create({} as never).id).toBe('alpha');
+  });
+
+  it('形状不对 / 目录缺失 / 导入抛错各自留 reason,其它包照常', async () => {
+    installFake('bad-shape', { body: 'export default { id: "b" };' });
+    installFake('gone', { noFiles: true });
+    installFake('throws', { body: 'throw new Error("boom at import");' });
+    installFake('good', { body: definitionSource('good') });
+    const set = await loadExtensions(root);
+    expect(set.worlds.map((m) => m.id)).toEqual(['good']);
+    const byName = Object.fromEntries(set.records.map((r) => [r.name, { ...r, reason: r.reason?.('zh') }]));
+    expect(byName['bad-shape']).toMatchObject({ loaded: false, reason: expect.stringContaining('WorldDefinition') });
+    expect(byName.gone).toMatchObject({ loaded: false, version: null, reason: expect.stringContaining('node_modules') });
+    expect(byName.throws).toMatchObject({ loaded: false, reason: expect.stringContaining('boom at import') });
+    expect(byName.good.loaded).toBe(true);
+  });
+
+  it('与内建同 id 的扩展不装;两个扩展同 id 先到的赢', async () => {
+    installFake('clash-builtin', { body: definitionSource('console-like') });
+    installFake('first', { body: definitionSource('dup') });
+    installFake('second', { body: definitionSource('dup') });
+    const set = await loadExtensions(root, { reserved: ['console-like'] });
+    expect(set.worlds.map((m) => m.id)).toEqual(['dup']);
+    const byName = Object.fromEntries(set.records.map((r) => [r.name, { ...r, reason: r.reason?.('zh') }]));
+    expect(byName['clash-builtin']).toMatchObject({ loaded: false, worldId: 'console-like', reason: expect.stringContaining('占用') });
+    expect(byName.first.loaded).toBe(true);
+    expect(byName.second).toMatchObject({ loaded: false, worldId: 'dup' });
+  });
+
+  it('入口按 exports(字符串 / "." 的 import)解析;cortico.webUiClient 标出来', async () => {
+    installFake('exp-str', { pkg: { main: undefined, exports: './entry.js' }, body: 'nope' });
+    writeFileSync(join(root, 'extensions/node_modules/exp-str/entry.js'), definitionSource('es'));
+    installFake('exp-obj', {
+      pkg: {
+        main: undefined,
+        exports: { '.': { import: './esm.js', require: './cjs.js' } },
+        cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world, webUiClient: 'dist/client.js' },
+      },
+      body: 'nope',
+    });
+    writeFileSync(join(root, 'extensions/node_modules/exp-obj/esm.js'), definitionSource('eo'));
+    const set = await loadExtensions(root);
+    expect(set.worlds.map((m) => m.id)).toEqual(['es', 'eo']);
+    expect(set.records.find((r) => r.name === 'exp-obj')?.webUiClient).toBe(true);
+    expect(set.records.find((r) => r.name === 'exp-str')?.webUiClient).toBe(false);
+  });
+});
+
+describe('ExtensionManager', () => {
+  interface Run { args: string[]; cwd: string }
+  function manager(booted: Partial<ExtensionSet> = {}, opts: { code?: number; hang?: boolean; packument?: unknown } = {}) {
+    const runs: Run[] = [];
+    let release: (() => void) | null = null;
+    const urls: string[] = [];
+    const set: ExtensionSet = {
+      dir: join(root, 'extensions'), records: [], worlds: [], providers: [], webUiAssets: [], ...booted,
+    };
+    const mgr = new ExtensionManager(root, set, {
+      run: (args, cwd) => {
+        runs.push({ args, cwd });
+        if (args[0] === 'config') return Promise.resolve({ code: 0, output: 'https://registry.npmjs.org/\n' });
+        if (opts.hang) return new Promise((r) => { release = () => r({ code: 0, output: '' }); });
+        return Promise.resolve({ code: opts.code ?? 0, output: 'Progress: resolved 1\n+ pkg 1.0.0\nDone in 1s' });
+      },
+      fetchJson: async (url) => {
+        urls.push(url);
+        if (opts.packument) return opts.packument;
+        if (!url.includes('/-/v1/search')) {
+          const name = decodeURIComponent(url.split('/').at(-1)!);
+          return { 'dist-tags': { latest: '1.2.0' }, versions: { '1.2.0': { name, version: '1.2.0', type: 'module', cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world } } } };
+        }
+        return {
+          objects: [
+            { package: { name: 'a-mod', version: '1.0.0', description: 'A', keywords: ['cortico-world'], license: 'MIT', links: { npm: 'https://npm/a', repository: 'git+https://github.com/me/a.git' }, publisher: { username: 'me' } }, downloads: { monthly: 12 }, dependents: '7' },
+            { package: { name: 'a-prov', version: '3.0.0', description: 'P', keywords: ['cortico-provider'] }, downloads: { monthly: 3 } },
+            { package: { name: 'not-a-mod', version: '2.0.0', description: 'N', keywords: ['other'] }, downloads: { monthly: 999 } },
+          ],
+        };
+      },
+    });
+    return { mgr, runs, urls, release: () => release?.() };
+  }
+
+  it('install:合法包名 → pnpm add name@version,在 extensions/ 里跑;首次先造 package.json 与 pnpm-workspace.yaml', async () => {
+    const { mgr, runs } = manager();
+    const msg = await mgr.install({ name: '@acme/cortico-world-x', version: '^1.2.0' });
+    expect(runs).toEqual([{ args: ['add', '@acme/cortico-world-x@^1.2.0', '--config.strict-dep-builds=false'], cwd: join(root, 'extensions') }]);
+    expect(JSON.parse(readFileSync(join(root, 'extensions/package.json'), 'utf8'))).toMatchObject({ private: true, dependencies: {} });
+    expect(existsSync(join(root, 'extensions/pnpm-workspace.yaml'))).toBe(true);
+    expect(msg).toContain('重启');
+    expect(msg).toContain('Done in 1s');
+    await mgr.install({ name: 'plain' });
+    expect(runs[1].args).toEqual(['add', 'plain', '--config.strict-dep-builds=false']);
+  });
+
+  it('装卸前把旧版本写下的 packageManager 换成 Cortico 自己的,依赖不动', async () => {
+    installFake('present', { noFiles: true });
+    const pkgFile = join(root, 'extensions/package.json');
+    writeFileSync(pkgFile, JSON.stringify({ ...JSON.parse(readFileSync(pkgFile, 'utf8')) as object, packageManager: 'pnpm@0.0.1' }));
+    const { mgr } = manager();
+    await mgr.uninstall('present');
+    const { packageManager } = JSON.parse(readFileSync(join(repoRoot(), 'package.json'), 'utf8')) as { packageManager: string };
+    expect(JSON.parse(readFileSync(pkgFile, 'utf8'))).toMatchObject({ packageManager, dependencies: { present: '^1.0.0' } });
+  });
+
+  it('install:本机目录必须存在且含 package.json,按绝对路径交给 pnpm', async () => {
+    const { mgr, runs } = manager();
+    await expect(mgr.install({ path: './nowhere' })).rejects.toThrow('Directory does not exist');
+    mkdirSync(join(root, 'empty'));
+    await expect(mgr.install({ path: './empty' })).rejects.toThrow('package.json');
+    mkdirSync(join(root, 'my mod'));
+    writeFileSync(join(root, 'my mod/package.json'), '{}');
+    await mgr.install({ path: './my mod' });
+    expect(runs[0].args).toEqual(['add', join(root, 'my mod'), '--config.strict-dep-builds=false']);
+  });
+
+  it('install:拒绝带 shell 元字符的包名、版本与路径,一次 pnpm 都不起', async () => {
+    const { mgr, runs } = manager();
+    for (const name of ['a b', 'x;rm -rf /', 'Upper', '../escape', '$(id)']) {
+      await expect(mgr.install({ name })).rejects.toThrow('package name');
+    }
+    for (const version of ['1.0 || 2.0', '>=1.0.0', '1.0"', '%PATH%']) {
+      await expect(mgr.install({ name: 'ok', version })).rejects.toThrow('version');
+    }
+    await expect(mgr.install({ path: './a"b' })).rejects.toThrow('characters');
+    expect(runs).toEqual([]);
+  });
+
+  it('install:allowBuilds 里待定的包,已装扩展的直接依赖改成 true 并 rebuild,其余列进回执', async () => {
+    installFake('cortico-world-native', { pkg: { dependencies: { 'native-dep': '^2.0.0' } } });
+    const workspaceFile = join(root, 'extensions/pnpm-workspace.yaml');
+    const workspace = (nativeDep: string) => [
+      'allowBuilds:',
+      '  denied-dep: false',
+      `  native-dep: ${nativeDep}`,
+      "  '@scope/deep': set this to true or false",
+      'minimumReleaseAgeExclude:',
+      '  - cortico-world-native@1.2.3',
+      '',
+    ].join('\n');
+    writeFileSync(workspaceFile, workspace('set this to true or false'));
+    const { mgr, runs } = manager();
+    const msg = await mgr.install({ name: 'cortico-world-native' }, 'en');
+    expect(runs.map((r) => r.args)).toEqual([
+      ['add', 'cortico-world-native', '--config.strict-dep-builds=false'],
+      ['rebuild', 'native-dep'],
+    ]);
+    expect(readFileSync(workspaceFile, 'utf8')).toBe(workspace('true'));
+    expect(msg).toContain('corepack pnpm rebuild @scope/deep');
+  });
+
+  it('install:pnpm 只记在 .modules.yaml 的 ignoredBuilds 里的包,直接依赖写 true 并 rebuild,其余写成待定', async () => {
+    installFake('cortico-world-native', { pkg: { dependencies: { 'native-dep': '^2.0.0' } } });
+    writeFileSync(join(root, 'extensions/node_modules/.modules.yaml'), JSON.stringify({ ignoredBuilds: ['native-dep@2.0.1', '@scope/deep@1.0.0'] }));
+    const { mgr, runs } = manager();
+    const msg = await mgr.install({ name: 'cortico-world-native' }, 'en');
+    expect(runs.map((r) => r.args)).toEqual([
+      ['add', 'cortico-world-native', '--config.strict-dep-builds=false'],
+      ['rebuild', 'native-dep'],
+    ]);
+    expect(readFileSync(join(root, 'extensions/pnpm-workspace.yaml'), 'utf8'))
+      .toBe("allowBuilds:\n  '@scope/deep': set this to true or false\n  native-dep: true\n");
+    expect(msg).toContain('corepack pnpm rebuild @scope/deep');
+  });
+
+  it('install:pnpm 非零退出 → 抛错带输出尾部', async () => {
+    const { mgr } = manager({}, { code: 1 });
+    await expect(mgr.install({ name: 'x' })).rejects.toThrow('exited with 1');
+  });
+
+  it('装卸串行:前一个没回来时第二个直接拒绝', async () => {
+    const { mgr, runs, release } = manager({}, { hang: true });
+    const first = mgr.install({ name: 'x' });
+    await expect(mgr.install({ name: 'y' })).rejects.toThrow('already running');
+    release();
+    await first;
+    expect(runs.map((r) => r.args[1])).toEqual(['x']);
+  });
+
+  it('uninstall:没装的包拒绝;装了的 → pnpm remove', async () => {
+    installFake('present');
+    const { mgr, runs } = manager();
+    await expect(mgr.uninstall('absent')).rejects.toThrow('not installed');
+    await expect(mgr.uninstall('bad name')).rejects.toThrow('package name');
+    const msg = await mgr.uninstall('present');
+    expect(runs).toEqual([{ args: ['remove', 'present', '--config.strict-dep-builds=false'], cwd: join(root, 'extensions') }]);
+    expect(msg).toContain('重启');
+  });
+
+  it('list:启动时的记录对照此刻磁盘——新装的 pending-restart,卸了的 removed,换版本的 pending-restart', async () => {
+    installFake('kept', { body: definitionSource('kept') });
+    installFake('bumped', { body: definitionSource('bumped') });
+    installFake('gone-later', { body: definitionSource('gl') });
+    installFake('broken', { body: 'export default 1;' });
+    const booted = await loadExtensions(root);
+    // 启动之后磁盘变了:换版本、卸掉、新装
+    installFake('bumped', { spec: '^2.0.0', body: definitionSource('bumped') });
+    const pkgFile = join(root, 'extensions/package.json');
+    const pkg = JSON.parse(readFileSync(pkgFile, 'utf8')) as { dependencies: Record<string, string> };
+    delete pkg.dependencies['gone-later'];
+    writeFileSync(pkgFile, JSON.stringify(pkg));
+    installFake('fresh', { body: definitionSource('fresh'), pkg: { description: '新来的' } });
+
+    const { mgr } = manager(booted);
+    const { dir, extensions } = mgr.list();
+    expect(dir).toBe(join(root, 'extensions'));
+    const state = Object.fromEntries(extensions.map((p) => [p.name, p.state]));
+    expect(state).toEqual({
+      kept: 'loaded', bumped: 'pending-restart', 'gone-later': 'removed', broken: 'failed', fresh: 'pending-restart',
+    });
+    expect(extensions.find((p) => p.name === 'fresh')).toMatchObject({ version: '1.2.3', description: '新来的', loaded: false });
+    expect(extensions.find((p) => p.name === 'broken')?.reason).toContain('WorldDefinition');
+  });
+
+  it.each(['string', 'object'])('list:本机作者与包元数据随条目给出,启动后新装的包也有 (%s)', async (shape) => {
+    const meta = {
+      author: shape === 'string' ? 'Example author <author@example.test> (https://example.test)' : { name: 'Example author' }, license: 'MIT', homepage: 'https://example.test/home',
+      repository: { url: 'git+https://example.test/org/repo.git' }, bugs: 'https://example.test/issues',
+      cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world, displayName: '示例 World' },
+    };
+    installFake('described', { body: definitionSource('described'), pkg: meta });
+    const booted = await loadExtensions(root);
+    installFake('fresh', { body: definitionSource('fresh'), pkg: meta });
+    const listed = new ExtensionManager(root, booted).list().extensions;
+    for (const name of ['described', 'fresh']) expect(listed.find((p) => p.name === name)).toMatchObject({
+      author: 'Example author',
+      metadata: {
+        displayName: '示例 World', license: 'MIT',
+        links: { repository: 'https://example.test/org/repo', homepage: 'https://example.test/home', bugs: 'https://example.test/issues' },
+      },
+    });
+    for (const name of ['described', 'fresh']) expect(listed.find((p) => p.name === name)?.metadata).not.toHaveProperty('publisher');
+    for (const name of ['described', 'fresh']) expect(listed.find((p) => p.name === name)?.metadata).not.toHaveProperty('author');
+  });
+
+  it('list:随框架提供的条目排在已装包之后;decorate 作用在每一条上', async () => {
+    installFake('mounted-world', { body: definitionSource('mounted-world') });
+    installFake('parked-world', { body: definitionSource('parked-world') });
+    const booted = await loadExtensions(root);
+    const builtin = { name: 'builtin:world:example', spec: 'builtin', version: '1.0.0', webUiClient: false, loaded: true, state: 'loaded' as const, builtin: true as const };
+    const mgr = new ExtensionManager(root, booted, { builtins: () => [builtin], decorate: (item) => ({ ...item, enabled: item.worldId === 'mounted-world' }) });
+    const extensions = mgr.list().extensions;
+    expect(extensions.at(-1)).toEqual({ ...builtin, enabled: false });
+    expect(Object.fromEntries(extensions.filter((p) => !p.builtin).map((p) => [p.name, p.enabled]))).toEqual({ 'mounted-world': true, 'parked-world': false });
+  });
+
+  it('list:依赖范围未变但磁盘包版本变化时待重启', async () => {
+    installFake('in-range', { body: definitionSource('in-range') });
+    const booted = await loadExtensions(root);
+    const file = join(root, 'extensions/node_modules/in-range/package.json');
+    const pkg = JSON.parse(readFileSync(file, 'utf8')) as { version: string };
+    writeFileSync(file, JSON.stringify({ ...pkg, version: '1.2.4' }));
+
+    const { mgr } = manager(booted);
+    expect(mgr.list().extensions[0]).toMatchObject({
+      spec: '^1.0.0', version: '1.2.3', installedVersion: '1.2.4', state: 'pending-restart',
+    });
+  });
+
+  it('search:关键字按 kind 换,只留带那个关键字的包,标出已安装', async () => {
+    installFake('a-mod');
+    const { mgr, urls } = manager();
+    expect(await mgr.search()).toEqual([{
+      name: 'a-mod', version: '1.0.0', description: 'A', publisher: 'me', license: 'MIT',
+      downloads: {}, dependents: 7, keywords: ['cortico-world'], kind: 'world',
+      // git+https 的仓库地址收成能点的 https
+      links: { npm: 'https://npm/a', repository: 'https://github.com/me/a' }, installed: true,
+    }]);
+    expect(await mgr.search('provider')).toEqual([{
+      name: 'a-prov', version: '3.0.0', description: 'P', downloads: {}, dependents: 0, kind: 'provider',
+      keywords: ['cortico-provider'], links: {}, installed: false,
+    }]);
+    expect(urls.filter((u) => u.includes('/-/v1/search')).map((u) => decodeURIComponent(u).match(/keywords:[a-z-]+/)?.[0])).toEqual([
+      'keywords:cortico-world', 'keywords:cortico-provider',
+    ]);
+    // 一页没取满就不翻下一页
+    expect(urls[0]).toContain('size=250&from=0');
+  });
+
+  it('search:一页取满就接着翻,同名包只留一条,翻到上限为止', () => {
+    const full = {
+      objects: Array.from({ length: 250 }, (_, i) => ({
+        package: { name: `w-${i}`, version: '1.0.0', keywords: ['cortico-world'] },
+        downloads: { monthly: 0 },
+      })),
+    };
+    const urls: string[] = [];
+    const set: ExtensionSet = { dir: join(root, 'extensions'), records: [], worlds: [], providers: [], webUiAssets: [] };
+    const mgr = new ExtensionManager(root, set, {
+      run: async () => ({ code: 0, output: '' }),
+      registry: 'https://registry.example.invalid',
+      // 每页都满:只有条数上限能让它停
+      fetchJson: async (url) => { urls.push(url); return full; },
+    });
+    return mgr.search().then((hits) => {
+      expect(urls.filter((u) => u.includes('/-/v1/search')).map((u) => u.match(/from=\d+/)?.[0])).toEqual(['from=0', 'from=250', 'from=500', 'from=750']);
+      // 每页是同一批名字:去重之后只剩一页
+      expect(hits).toHaveLength(250);
+      expect(mgr.searchPartial()).toBe(true);
+    });
+  });
+
+  it('search:下载量按截至 UTC 昨天的日期区间问 npm 下载统计,带 scope 的逐个问,累计往前加到一整段没下载为止', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // UTC 3-1 当天没过完,区间止于闰日 2-29
+    vi.setSystemTime(new Date('2028-03-01T00:05:00Z'));
+    onTestFinished(() => { vi.useRealTimers(); });
+    const set: ExtensionSet = { dir: join(root, 'extensions'), records: [], worlds: [], providers: [], webUiAssets: [] };
+    // 每个包按时间倒序各段的下载量,没列出的段是 0;c-mod 统计里查不到
+    const windows: Record<string, number[]> = { 'a-mod': [10, 5], '@s/b-mod': [4] };
+    const asked: Record<string, number> = {};
+    const urls: string[] = [];
+    const prefix = 'https://api.npmjs.org/downloads/point/';
+    const mgr = new ExtensionManager(root, set, {
+      run: async () => ({ code: 0, output: '' }),
+      registry: 'https://registry.example.invalid',
+      fetchJson: async (url) => {
+        if (url.includes('/-/v1/search')) {
+          return { objects: ['a-mod', '@s/b-mod', 'c-mod'].map((name) => ({ package: { name, version: '1.0.0', keywords: ['cortico-world'] }, downloads: { monthly: 99 } })) };
+        }
+        urls.push(url);
+        const rest = url.slice(prefix.length);
+        const period = rest.slice(0, rest.indexOf('/'));
+        const names = rest.slice(rest.indexOf('/') + 1).split(',');
+        const entry = (name: string) => {
+          if (!(name in windows)) return null;
+          if (period === '2028-02-23:2028-02-29') return { downloads: 1 };
+          if (period === '2028-01-31:2028-02-29') return { downloads: 3 };
+          const i = asked[name] = (asked[name] ?? -1) + 1;
+          return { downloads: windows[name]![i] ?? 0 };
+        };
+        if (names.length === 1) { const e = entry(names[0]!); if (!e) throw new Error('404'); return e; }
+        return Object.fromEntries(names.map((name) => [name, entry(name)]));
+      },
+    });
+    const hits = await mgr.search();
+    expect(Object.fromEntries(hits.map((h) => [h.name, h.downloads]))).toEqual({
+      'a-mod': { total: 15, month: 3, week: 1 },
+      '@s/b-mod': { total: 4, month: 3, week: 1 },
+      // 统计里查不到
+      'c-mod': {},
+    });
+    // 不带 scope 的合批问;a-mod 问到第三段是 0 才停,b-mod 第二段就停
+    expect(urls.filter((u) => u.endsWith('/a-mod,c-mod'))).toHaveLength(3);
+    expect(urls.filter((u) => u.endsWith('/a-mod'))).toHaveLength(2);
+    expect(urls.filter((u) => u.endsWith('/@s/b-mod'))).toHaveLength(4);
+  });
+
+  it('search:下载统计迟迟不回,列表照样出,下载量缺席', async () => {
+    vi.useFakeTimers();
+    try {
+      const set: ExtensionSet = { dir: join(root, 'extensions'), records: [], worlds: [], providers: [], webUiAssets: [] };
+      const mgr = new ExtensionManager(root, set, {
+        run: async () => ({ code: 0, output: '' }),
+        registry: 'https://registry.example.invalid',
+        fetchJson: (url) => url.includes('/-/v1/search')
+          ? Promise.resolve({ objects: [{ package: { name: 'a-mod', version: '1.0.0', keywords: ['cortico-world'] }, downloads: { monthly: 5 } }] })
+          : new Promise(() => {}),
+      });
+      const pending = mgr.search();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect((await pending).map((h) => h.downloads)).toEqual([{}]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('search:最后一页没取满就不算结果不全', async () => {
+    const { mgr } = manager();
+    await mgr.search();
+    expect(mgr.searchPartial()).toBe(false);
+  });
+
+  it('packageInfo:指定 dist-tag 或版本号时读那一版', async () => {
+    const version = (v: string) => ({ name: 'tagged', version: v, type: 'module', cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world, displayName: `Tagged ${v}` } });
+    const { mgr } = manager({}, { packument: { 'dist-tags': { latest: '1.0.0', next: '2.0.0-rc.1' }, versions: { '1.0.0': version('1.0.0'), '2.0.0-rc.1': version('2.0.0-rc.1') } } });
+    expect(await mgr.packageInfo('tagged', 'next')).toMatchObject({ version: '2.0.0-rc.1', displayName: 'Tagged 2.0.0-rc.1' });
+    expect((await mgr.packageInfo('tagged', '1.0.0')).version).toBe('1.0.0');
+    await expect(mgr.packageInfo('tagged', '9.9.9')).rejects.toThrow('9.9.9');
+  });
+
+  it('packageInfo:发布历史超过六版时全部返回，排除已撤回的版本', async () => {
+    const versions = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`1.0.${i}`, { name: 'example', version: `1.0.${i}`, type: 'module', cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world } }]));
+    const time = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`1.0.${i}`, `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00Z`]));
+    const { mgr } = manager({}, { packument: { 'dist-tags': { latest: '1.0.8' }, versions, time } });
+    const info = await mgr.packageInfo('example');
+    expect(info.versionCount).toBe(Object.keys(versions).length);
+    expect(info.history.map(entry => entry.version)).toEqual(Object.keys(versions).reverse());
+  });
+
+  it('icon:声明了且文件在包里才给;list 标出有图标的包', async () => {
+    const cortico = (icon: string) => ({ cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world, icon } });
+    installFake('pictured', { body: definitionSource('pictured'), pkg: cortico('assets/icon.svg') });
+    installFake('missing-file', { body: definitionSource('missing-file'), pkg: cortico('icon.png') });
+    const modules = join(root, 'extensions', 'node_modules');
+    mkdirSync(join(modules, 'pictured', 'assets'));
+    writeFileSync(join(modules, 'pictured', 'assets', 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const { mgr } = manager();
+    expect(mgr.icon('pictured')).toEqual({ file: join(modules, 'pictured', 'assets', 'icon.svg'), type: 'image/svg+xml' });
+    expect(mgr.icon('missing-file')).toBeNull();
+    expect(mgr.icon('not-installed')).toBeNull();
+    expect(Object.fromEntries(mgr.list().extensions.map((p) => [p.name, p.icon ?? false]))).toEqual({ pictured: true, 'missing-file': false });
+  });
+
+  it('check:只读 manifest;类别不符、声明不合格与目录缺失各自拒绝,pnpm 只读一次 registry 配置', async () => {
+    const { mgr, runs } = manager();
+    expect(await mgr.check({ name: 'remote-world', version: '1.2.0' }, 'world')).toEqual({ name: 'remote-world', version: '1.2.0', kind: 'world' });
+    await expect(mgr.check({ name: 'remote-world' }, 'provider')).rejects.toThrow('world');
+    const local = join(root, 'local-world'); mkdirSync(local);
+    writeFileSync(join(local, 'package.json'), JSON.stringify({ name: 'local-world', version: '0.1.0', type: 'module', cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world } }));
+    expect(await mgr.check({ path: local })).toEqual({ name: 'local-world', version: '0.1.0', kind: 'world' });
+    writeFileSync(join(local, 'package.json'), JSON.stringify({ name: 'local-world', version: '0.1.0' }));
+    await expect(mgr.check({ path: local })).rejects.toThrow('cortico');
+    await expect(mgr.check({ path: join(root, 'missing') })).rejects.toThrow('Directory does not exist');
+    expect(runs.map((r) => r.args)).toEqual([['config', 'get', 'registry']]);
+  });
+
+  it('registry 取 pnpm 配置的那个:搜索与详情都用它,pnpm 只问一次', async () => {
+    const runs: string[][] = [];
+    const urls: string[] = [];
+    const mgr = new ExtensionManager(root, { dir: join(root, 'extensions'), records: [], worlds: [], providers: [], webUiAssets: [] }, {
+      run: async (args) => { runs.push(args); return { code: 0, output: 'WARN some notice\nhttps://mirror.example.invalid/npm/\n' }; },
+      fetchJson: async (url) => {
+        urls.push(url);
+        return url.includes('/-/v1/search') ? { objects: [] } : { 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { name: 'a', version: '1.0.0' } } };
+      },
+    });
+    await mgr.search('world');
+    await mgr.packageInfo('a');
+    // `keywords:` 一条没回,再按关键字文本搜一次
+    expect(urls.map((u) => u.split('?')[0])).toEqual([
+      'https://mirror.example.invalid/npm/-/v1/search', 'https://mirror.example.invalid/npm/-/v1/search', 'https://mirror.example.invalid/npm/a',
+    ]);
+    expect(runs).toEqual([['config', 'get', 'registry']]);
+    expect(await mgr.npmRegistry()).toBe('https://mirror.example.invalid/npm');
+  });
+
+  it('setRegistry 只换 .npmrc 的 registry 行,之后的查询改问 pnpm 用新源;空串删掉这一行', async () => {
+    const dir = join(root, 'extensions');
+    const npmrc = join(dir, '.npmrc');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(npmrc, '@acme:registry=https://scoped.example.invalid/\r\nregistry=https://old.example.invalid/\r\nstrict-ssl=false\r\n');
+    const hosts: string[] = [];
+    const mgr = new ExtensionManager(root, { dir, records: [], worlds: [], providers: [], webUiAssets: [] }, {
+      // 与 pnpm 一样读 cwd 的 .npmrc,没有 registry 行时是官方源
+      run: async (_args, cwd) => {
+        const file = join(cwd, '.npmrc');
+        return { code: 0, output: (existsSync(file) ? /^registry=(.*)$/m.exec(readFileSync(file, 'utf8'))?.[1].trim() : undefined) ?? 'https://registry.npmjs.org/' };
+      },
+      fetchJson: async (url) => { hosts.push(new URL(url).host); return { objects: [] }; },
+    });
+    await mgr.search('world');
+    expect(() => mgr.setRegistry('ftp://mirror.example.invalid/')).toThrow('ftp://mirror.example.invalid/');
+    mgr.setRegistry('https://new.example.invalid/npm/');
+    await mgr.search('world');
+    expect(hosts).toEqual(['old.example.invalid', 'old.example.invalid', 'new.example.invalid', 'new.example.invalid']);
+    expect(readFileSync(npmrc, 'utf8')).toBe('@acme:registry=https://scoped.example.invalid/\r\nregistry=https://new.example.invalid/npm/\r\nstrict-ssl=false\r\n');
+    mgr.setRegistry('');
+    expect(readFileSync(npmrc, 'utf8')).toBe('@acme:registry=https://scoped.example.invalid/\r\nstrict-ssl=false\r\n');
+    expect(mgr.configuredRegistry()).toBeNull();
+    expect(await mgr.npmRegistry()).toBe('https://registry.npmjs.org');
+  });
+
+  it('search:registry 不认 keywords: 写法(空列表)时按关键字文本搜,只留带关键字的包', async () => {
+    const queries: string[] = [];
+    const mgr = new ExtensionManager(root, { dir: join(root, 'extensions'), records: [], worlds: [], providers: [], webUiAssets: [] }, {
+      registry: 'https://mirror.example.invalid',
+      fetchJson: async (url) => {
+        if (!url.includes('/-/v1/search')) return {};
+        const text = new URL(url).searchParams.get('text')!;
+        queries.push(text);
+        if (text.startsWith('keywords:')) return { objects: [] };
+        return { objects: [
+          { package: { name: 'cortico-world-a', version: '1.0.0', keywords: ['cortico-world'] } },
+          { package: { name: 'cortico-world-lookalike', version: '1.0.0', keywords: ['other'] } },
+        ] };
+      },
+    });
+    expect((await mgr.search('world')).map((hit) => hit.name)).toEqual(['cortico-world-a']);
+    expect(queries).toEqual(['keywords:cortico-world', 'cortico-world']);
+  });
+
+  it('pnpm 读不出 registry 时查询报 pnpm 的错误,下次再问', async () => {
+    let calls = 0;
+    const mgr = new ExtensionManager(root, { dir: join(root, 'extensions'), records: [], worlds: [], providers: [], webUiAssets: [] }, {
+      run: async () => (++calls === 1 ? { code: 1, output: 'ERR_PNPM_SOMETHING broken config' } : { code: 0, output: 'https://mirror.example.invalid/' }),
+      fetchJson: async () => ({ objects: [] }),
+    });
+    await expect(mgr.search('world')).rejects.toThrow('ERR_PNPM_SOMETHING broken config');
+    await expect(mgr.search('world')).resolves.toEqual([]);
+    expect(calls).toBe(2);
+  });
+
+  it('请求失败的错误带主机与底层错误码', async () => {
+    installFake('npm-mod');
+    const server = createServer();
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    await new Promise((done) => server.close(done));
+    const mgr = new ExtensionManager(root, { dir: join(root, 'extensions'), records: [], worlds: [], providers: [], webUiAssets: [] }, { registry: `http://127.0.0.1:${port}` });
+    const { errors } = await mgr.updates();
+    expect(errors).toHaveLength(1);
+    expect(errors[0].error).toContain(`127.0.0.1:${port}: fetch failed`);
+    expect(errors[0].error).toContain('ECONNREFUSED');
+  });
+
+  it('回应正文读到一半断开或不是 JSON 时，错误同样带主机与底层原因', async () => {
+    installFake('cut-mod');
+    installFake('html-mod');
+    const server = createServer((req, res) => {
+      if (req.url?.includes('cut-mod')) {
+        res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+        res.write('{"dist-tags":');
+        setTimeout(() => res.socket?.destroy(), 20);
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html' }).end('<html>blocked</html>');
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const mgr = new ExtensionManager(root, { dir: join(root, 'extensions'), records: [], worlds: [], providers: [], webUiAssets: [] }, { registry: `http://127.0.0.1:${port}` });
+      const errors = new Map((await mgr.updates()).errors.map((e) => [e.name, e.error]));
+      expect(errors.get('cut-mod')).toContain(`127.0.0.1:${port}: terminated`);
+      expect(errors.get('cut-mod')).toContain('UND_ERR_SOCKET');
+      expect(errors.get('html-mod')).toContain(`127.0.0.1:${port}: `);
+      expect(errors.get('html-mod')).toContain('JSON');
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
+
+  it.each([
+    { shape: 'string', author: 'Example author <author@example.test> (https://example.test)', expected: 'Example author' },
+    { shape: 'object', author: { name: 'Example author' }, expected: 'Example author' },
+    { shape: 'missing', author: undefined, expected: undefined },
+  ])('packageInfo:作者与发布者分别返回 ($shape)', async ({ author, expected }) => {
+    const publisher = 'Automated publisher';
+    const { mgr } = manager({}, { packument: {
+      'dist-tags': { latest: '1.0.0' },
+      versions: { '1.0.0': {
+        name: 'authored-mod', version: '1.0.0', author, _npmUser: { name: publisher },
+        cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world },
+      } },
+    } });
+    const info = await mgr.packageInfo('authored-mod');
+    expect(info.publisher).toBe(publisher);
+    if (expected) expect(info.author).toBe(expected);
+    else expect(info).not.toHaveProperty('author');
+  });
+
+  it('packageInfo:latest 版本的 cortico 块按本机同一套判据解析,已安装的带上版本范围', async () => {
+    installFake('a-mod');
+    const version = {
+      name: 'a-mod', version: '2.0.0', type: 'module', main: './index.js', license: 'MIT',
+      keywords: ['cortico-world'], cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world, webUiClient: 'dist/webui.js' },
+      engines: { node: '>=22' }, os: ['win32', '!darwin'], dependencies: { ws: '^8' }, dist: { unpackedSize: 2048, fileCount: 9 },
+      maintainers: [{ username: 'me' }], _npmUser: { name: 'me' },
+      repository: { url: 'git+ssh://git@github.com/me/a-mod.git' }, homepage: 'https://example.invalid',
+    };
+    const { mgr, urls } = manager({}, {
+      packument: {
+        'dist-tags': { latest: '2.0.0' },
+        versions: { '1.0.0': { ...version, version: '1.0.0' }, '2.0.0': version },
+        time: {
+          created: '2026-01-01T00:00:00.000Z', modified: '2026-03-03T00:00:00.000Z',
+          '1.0.0': '2026-01-01T00:00:00.000Z', '2.0.0': '2026-03-02T00:00:00.000Z',
+        },
+      },
+    });
+    const info = await mgr.packageInfo('a-mod');
+    expect(urls[0]).toBe('https://registry.npmjs.org/a-mod');
+    expect(info).toMatchObject({
+      name: 'a-mod', version: '2.0.0', license: 'MIT', published: '2026-03-02T00:00:00.000Z',
+      created: '2026-01-01T00:00:00.000Z', versionCount: 2,
+      manifest: { kind: 'world', api: EXTENSION_API_VERSIONS.world, webUiClient: 'dist/webui.js' },
+      frameworkApi: EXTENSION_API_VERSIONS.world, engines: '>=22', os: ['win32', '!darwin'], unpackedSize: 2048, fileCount: 9,
+      dependencies: ['ws'], maintainers: ['me'], installed: true, installedSpec: '^1.0.0',
+      links: { npm: 'https://www.npmjs.com/package/a-mod', repository: 'https://github.com/me/a-mod', homepage: 'https://example.invalid' },
+    });
+    // 新的在前
+    expect(info.history.map((h) => h.version)).toEqual(['2.0.0', '1.0.0']);
+    expect(info.problems).toBeUndefined();
+  });
+
+  it('packageInfo:历史版本按各自的 manifest 判断能不能装', async () => {
+    const version = { name: 'c', keywords: ['cortico-world'], type: 'module', cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world } };
+    const { mgr } = manager({}, {
+      packument: {
+        'dist-tags': { latest: '2.0.0' },
+        versions: {
+          '0.9.0': { ...version, version: '0.9.0', cortico: { kind: 'world', api: PREVIOUS_CONTRACT_VERSIONS.world - 1 } },
+          '1.0.0': { ...version, version: '1.0.0', cortico: { kind: 'world', api: PREVIOUS_CONTRACT_VERSIONS.world } },
+          '2.0.0': { ...version, version: '2.0.0' },
+        },
+        time: { '0.9.0': '2025-12-01T00:00:00.000Z', '1.0.0': '2026-01-01T00:00:00.000Z', '2.0.0': '2026-03-02T00:00:00.000Z' },
+      },
+    });
+    const info = await mgr.packageInfo('c');
+    expect(info.history[0]).toEqual({ version: '2.0.0', date: '2026-03-02T00:00:00.000Z' });
+    expect(info.history[1].problems).toBeUndefined();
+    expect(info.history[1].warnings).toEqual([expect.stringContaining(`v${PREVIOUS_CONTRACT_VERSIONS.world}`)]);
+    expect(info.history[2].problems).toEqual([expect.stringContaining(`v${PREVIOUS_CONTRACT_VERSIONS.world - 1}`)]);
+  });
+
+  it('packageInfo:装不上的包给出理由;包名不合法与没有 latest 各自抛错', async () => {
+    const { mgr } = manager({}, {
+      packument: {
+        'dist-tags': { latest: '1.0.0' },
+        versions: { '1.0.0': { name: 'b', version: '1.0.0', keywords: [], cortico: { kind: 'world', api: 99 } } },
+        time: { '1.0.0': '2026-02-02T00:00:00.000Z' },
+      },
+    });
+    const info = await mgr.packageInfo('b');
+    expect(info.manifest).toBeUndefined();
+    expect(info.problems?.join(' ')).toContain('type');
+    expect(info.problems?.join(' ')).toContain('v99');
+    await expect(mgr.packageInfo('Bad Name')).rejects.toThrow('package name');
+    const { mgr: empty } = manager({}, { packument: { 'dist-tags': {}, versions: {} } });
+    await expect(empty.packageInfo('c')).rejects.toThrow('latest');
+  });
+
+  it('updates:只检查 npm 包,比较磁盘版本与 latest 并报告契约问题', async () => {
+    installFake('npm-mod');
+    installFake('linked-mod', { spec: 'link:../linked-mod' });
+    const { mgr, urls } = manager({}, { packument: {
+      'dist-tags': { latest: '1.3.0' },
+      versions: { '1.3.0': {
+        name: 'npm-mod', version: '1.3.0', type: 'module', main: './index.js',
+        keywords: ['cortico-world'], cortico: { kind: 'world', api: 99 },
+      } },
+    } });
+    expect(await mgr.updates()).toMatchObject({
+      updates: [{ name: 'npm-mod', installedVersion: '1.2.3', latestVersion: '1.3.0', problems: [expect.stringContaining('v99')] }],
+      errors: [],
+    });
+    expect(urls).toEqual(['https://registry.npmjs.org/npm-mod']);
+  });
+
+  it('updates:registry 失败单包报错,已是最新版不列为更新', async () => {
+    installFake('npm-mod');
+    const { mgr: failed } = manager({}, { packument: { 'dist-tags': {}, versions: {} } });
+    expect(await failed.updates()).toMatchObject({ updates: [], errors: [{ name: 'npm-mod' }] });
+    const { mgr: current } = manager({}, { packument: {
+      'dist-tags': { latest: '1.2.3' },
+      versions: { '1.2.3': { name: 'npm-mod', version: '1.2.3', type: 'module', main: './index.js', keywords: ['cortico-world'], cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world } } },
+    } });
+    expect(await current.updates()).toEqual({ updates: [], errors: [] });
+  });
+
+  it('updates:预发布版本按 SemVer 比较,不把较旧的 latest 当更新', async () => {
+    installFake('npm-mod');
+    const packument = (latest: string) => ({
+      'dist-tags': { latest },
+      versions: { [latest]: { name: 'npm-mod', version: latest, type: 'module', main: './index.js', keywords: ['cortico-world'], cortico: { kind: 'world', api: EXTENSION_API_VERSIONS.world } } },
+    });
+    expect((await manager({}, { packument: packument('1.2.3-beta.1') }).mgr.updates()).updates).toEqual([]);
+    expect((await manager({}, { packument: packument('1.2.4-beta.1') }).mgr.updates()).updates).toMatchObject([{ latestVersion: '1.2.4-beta.1' }]);
+  });
+
+  it('repositoryWebUrl:npm 那几种写法都收成 https,认不出的原样退回', () => {
+    expect(repositoryWebUrl('git+https://github.com/me/a.git')).toBe('https://github.com/me/a');
+    expect(repositoryWebUrl('git://github.com/me/a.git')).toBe('https://github.com/me/a');
+    expect(repositoryWebUrl('git+ssh://git@github.com/me/a.git')).toBe('https://github.com/me/a');
+    expect(repositoryWebUrl('git@gitlab.com:me/a.git')).toBe('https://gitlab.com/me/a');
+    expect(repositoryWebUrl('https://example.invalid/me/a')).toBe('https://example.invalid/me/a');
+    expect(repositoryWebUrl('me/a')).toBe('me/a');
+  });
+
+  it('readInstalled:没有 extensions/ 或没有 dependencies 都是空表', () => {
+    expect(readInstalled(join(root, 'extensions'))).toEqual([]);
+    mkdirSync(join(root, 'extensions'));
+    writeFileSync(join(root, 'extensions/package.json'), '{"name":"x"}');
+    expect(readInstalled(join(root, 'extensions'))).toEqual([]);
+  });
+
+  it('readInstalled:PowerShell 5.1 写出的带 BOM、CRLF 清单照常读;读不出时报错带文件路径', () => {
+    mkdirSync(join(root, 'extensions'));
+    const file = join(root, 'extensions/package.json');
+    writeFileSync(file, '﻿{\r\n    "name":  "x",\r\n    "dependencies":  {\r\n        "a":  "^1.0.0"\r\n    }\r\n}\r\n', 'utf8');
+    expect(readInstalled(join(root, 'extensions'))).toEqual([{ name: 'a', spec: '^1.0.0' }]);
+    writeFileSync(file, '{"name":', 'utf8');
+    expect(() => readInstalled(join(root, 'extensions'))).toThrow(file);
+  });
+});
+
+describe('extensionsDir', () => {
+  it('没设 CORTICO_EXTENSIONS_DIR 时在检出根下', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ext-root-'));
+    expect(extensionsDir(root, {})).toBe(join(root, 'extensions'));
+  });
+
+  it('设了就用它:程序装在只读的 .app 里时,扩展装到可写的数据目录', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ext-root-'));
+    const data = mkdtempSync(join(tmpdir(), 'ext-data-'));
+    expect(extensionsDir(root, { [EXTENSIONS_DIR_ENV]: data })).toBe(data);
+  });
+});

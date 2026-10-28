@@ -1,0 +1,186 @@
+<!-- Owner: src/core/types.ts (World, WorldHost), src/world.ts, src/worlds/index.ts, src/undeclared-names.ts -->
+
+# World
+
+World 通过事件报告外部环境变化,通过工具提供外部操作,并向 system 前缀提供环境描述。
+World 不直接访问 Memory 或调用 Persona 的工具。
+其他架构的 bot 挂载 World 需要的能力分级见 [world-compatibility.md](world-compatibility.md)。
+
+## 契约
+
+`World`:
+
+| 成员 | 含义 |
+|---|---|
+| `id` | 同时用于配置段 `worlds.<id>` 和 WebUI 页 `world:<id>` |
+| `envPromptVars()` | 环境提示词模板的当前占位符值。返回 `null` 时省略整段,`{}` 时使用无变量模板;前缀重建时重新调用 |
+| `tools()` | 这个 World 暴露的工具 |
+| `start(host)` / `stop()` | 启动与停止;运行中挂载时先调用 `start`,成功后加入挂载表 |
+| `webUi?()` | WebUI 页声明(见 [webui.md](webui.md)) |
+| `outputTap?()` | 主 session 输出流的接收器(演出、字幕);这一刻没有接收器时返回 `undefined` |
+| `onHandoffEnded?()`、`onTurnEnded?()` | 交接结束与主循环一轮结束的通知;隐藏的 World 不接收 |
+| `onEventsSettled?(events, outcome)` | 本 World 的事件写入主 session(`delivered`)或被操作者清空队列丢弃(`discarded`) |
+| `onRunPhase?(phase)` | 主循环的 `RunPhase`(`idle`、`delivering`、`model`、`tools`、`backoff`、`handoff`,轮序号,执行中的工具名)改变时同步调用;隐藏的 World 不接收 |
+| `shutdownVerification?(language)` | 关机前要核对的外部状态,同步只读快照;文案按 `language` 给 |
+
+Core 通过 `WorldHost` 向 World 提供以下能力:
+
+| 成员 | 含义 |
+|---|---|
+| `pushEvent(e, opts?)` | 落库分配游标,按 `opts.trigger` 投递;不填 `origin` 即 `external` |
+| `pushDeferred(e, { trigger })` | 投递时生成正文;`render` 返回 null、抛错或超时时不存储、不投递 |
+| `pushCandidate?(spec, { trigger })` | 先归档原始事件,在投递时选择内容并生成正文 |
+| `store`、`drainPendingEvents(filter)` | 读事件库;消费待投递事件(一次性) |
+| `withdrawPending?(cursor)` | 撤回本 World 一条未投递的事件;事件库追加撤回记录,重启不补投 |
+| `promotePending?(cursor, trigger)` | 让本 World 一条未投递的事件按 `flush`、`preempt` 或 `interrupt` 立即触发;暂停或闸门挡着时,放行后随整批投递,不打断 |
+| `modelFacts` | 当前端点的模型名、接受的 MIME 与上下文窗口，每次调用按当前端点读取;未选端点或端点未选模型时 `accepts` 为 false |
+| `blob(handle)`、`reportUsage()`、`llmStalls?()` | 附件、用量上报、模型停滞查询 |
+| `cognition?` | 向 Persona 请求后台认知计算;Persona 未提供时该成员不存在 |
+| `log` | 包含 World 区域和调用关联字段的 Logger |
+
+`trigger` 控制投递时机:
+- `preempt`:立即投递,取消尚未产生外部输出的模型调用并丢弃其输出,在同一批内带着新事件重新请求;
+  已有外部输出或正在执行工具时不取消。
+- `interrupt`:立即投递并停止当前轮。模型调用一律取消,已外化的输出保留;执行中的
+  `interruptible` 工具收到 `signal`,回执末尾注明执行期间发出过打断信号;本轮尚未开始的调用不执行。
+- `flush`:立即投递并包含积压事件。
+- `debounce`:参与合批。
+- `piggyback`:仅排队,随其他触发产生的批次投递。
+
+主循环在轮次边界接收新事件:工具全部返回后,或 `preempt`、`interrupt` 取消模型调用后。
+外部事件默认 `debounce`,内部事件默认 `flush`。`deliver: false` 仅存储事件。
+
+被动变化通过事件报告,主动查询通过工具提供。当前状态快照使用 `pushDeferred` 在投递时读取,
+配合 `piggyback` 随其他事件投递。新信息让还没出口的回答作废时用 `preempt`;用户要求停下正在做的事时
+用 `interrupt`。
+World 应通过事件报告服务器起停、存档切换、连接变化等状态变更。
+
+事件是 `EventEnvelope`:`cursor`、`run`、`type`、`ts`、`source`(World id)、`origin`、`tags`、
+`text`(由生产方提供,Core 不添加语义内容)、`senderKey`、`meta`、`blobs`、`ephemeral`。
+系统生成的判断只陈述可确认的事实。`origin: 'internal'` 只用于来源可验证的内部通知;
+外部消息使用 `origin: 'external'`。
+
+工具回执 `ToolOutcome { text, blobs?, failed? }`;handler 抛错,或返回值既不是字符串也不是带字符串 text 的对象,Core 都转成失败回执。
+`interruptible` 的工具在 `interrupt` 到达时停止并返回已完成部分的回执,Core 等它返回;
+未声明的工具执行到结束。
+`endsTurn` 让一个工具结束本轮,`barrierAfter` 让流式提前派发在它之后停下。
+工具名在一个 bot 内全局唯一:模型按名字调用,Core 按名字归属与隐藏。用自家短名做前缀
+(`mc_`、`qq_`);工具名与已挂载 World、Persona 工具或 Core 保留帧名冲突时,装配层拒绝挂载并报告原因。
+工具声明放在导出的 `<PREFIX>_TOOL_DECLS`(不含 handler),`tools()` 在其上加 handler;自描述的 `describe.tools` 由
+`describeTools(<PREFIX>_TOOL_DECLS, summaries)` 从同一份声明拼成,每个工具配一句给人看的 `summary`。仓内 World 都写
+`describe`,`tests/builtin-describe.test.ts` 核对各可达配置下的工具名与声明一致。
+
+## 定义与装配
+
+`WorldDefinition`(`src/world.ts`):`id`、`label`、`defaults()`(配置段默认值,World 声明的
+`enabled` 应为 false)、`preflight?`、`configOptions?`、`create(ctx)`、`describe?`(自描述,见下)。
+`WorldContext` 向 `create` 提供:`cfg`(共享配置对象)、`timezone`、`botName`、`botDir` /
+`packageDir` / `dataDir` / `repoRoot`、`secret()` / `storeSecret()`、`persist()`(写回
+`worlds.<id>`)、`restart()`。界面语言不在其中:它是每个请求的属性,`webUi(language)` 与
+`configOptions(kind, language)` 每次传入(见 [webui.md](webui.md))。WebUI 里的 World 名取
+`webUi(language).label`,没有时取定义的 `label`,两者都按请求现读。
+
+`ctx.cfg` 是部署配置里 `worlds.<id>` 段的共享引用,WebUI 改配置时原地写入这个对象。World 用到时现读
+`ctx.cfg.<键>`,改动立即生效;构造时存进字段、或用来建立连接和启动进程的值,要等实例重新构造(停用后
+再启用、World 重启、bot 重启)才生效。这类项在 schema 里标 `x-hot: false`,设置页显示「重启生效」;没标的项
+按立即生效显示。
+
+`ctx.dataDir` 是部署的数据目录,Core 与这个部署的全部 World 共用,同名文件会互相覆盖。World 的文件名与
+`webUi().storage` 的 key 都以 World id 开头,仓内 World 写作 `minecraft-chests.json` 与 `minecraft-chests`。
+装配层给每个存储项盖上归属 `world:<id>`,数据页和清除接口按归属与 key 一起区分。
+
+仓内定义列在 `src/worlds/index.ts`,由 `loadBuiltinWorlds(ids?)` 按 id 动态导入 `src/worlds/<id>/definition.ts`;
+不给 `ids` 时带上全部(`BUILTIN_WORLD_IDS`),有不认识的 id 时抛错。启动器带上全部仓内 World,与扩展定义
+合并后通过 `withWorlds()` 交给 bot 定义。
+
+自己写装配入口的下游产品(调 `loadDeployment()`、`createBot()` 的应用)传 `ids` 选要带的仓内 World:
+
+```ts
+const builtin = await loadBuiltinWorlds(['console']);
+const extensions = await loadExtensions(repoRoot(), { reserved: builtin.map((w) => w.id), /* … */ });
+const definition = withWorlds(bot, [...builtin, ...extensions.worlds]);
+```
+
+`src/worlds/index.ts` 不静态导入任何 World,导入路径是模板字符串,TypeScript 不解析。没选上的 World 不被
+加载;产物里删掉 `src/worlds/<id>/` 目录不影响装配和对其余文件的类型检查,它在 `package.json` 里的依赖
+也可以不装。`src/launcher.ts` 总是带全部仓内 World,删了目录的产物不能用它启动。
+
+bot 的 `index.ts` 在 `declares` 中列出默认启用的 World id。声明但未安装的 World 显示为不可用;
+补充 World 默认段时,声明过的 `enabled` 置 true,其余置 false;bot 已提供的配置段保留原值,
+部署配置可继续覆盖。
+`WorldAssembly` 分别管理各 World:`create()` 抛错不影响其他 World 的构造;
+`activate` / `deactivate` 热生效并写回 `worlds.<id>.enabled`。定义实例在停用或重启时重新构造;
+预建实例重启时复用现有对象,停用后不能通过 `activate` 重新挂载。
+生命周期事件(激活、停用、重启、可见性、启动期 `start()` 抛错)转给 `Persona.onWorldLifecycle`;启动期初始挂载与失败的激活不报。
+
+`describe` 列出全部工具与会推出的事件,不进提示词,写法与导出见 [extensions.md](extensions.md)「自描述」。
+装配层在 World 挂载时对照 `describe.tools` 检查 `tools()` 的工具名,经 Core 的 `onWorldPush` 对照
+`describe.events` 检查 `pushEvent`、`pushDeferred`、`pushCandidate` 的事件 type;不在声明里的照常生效,
+每个名字在 `worlds.<id>` 下记一条 warn,World 页列出(`src/undeclared-names.ts`)。
+
+## 环境提示词
+
+每个 World 一份 `ENV_PROMPT.md` 模板,三层覆盖:`src/worlds/<id>/ENV_PROMPT.md` ←
+`bots/<名>/worlds/<id>/ENV_PROMPT.md` ← `<部署>/worlds/<id>/ENV_PROMPT.md`,后一层整份替换。
+Persona 的段模板用 `{{world.id}}` 与 `{{world.envPrompt}}` 嵌入,前缀总装模板用
+`{{worlds.envPrompts}}`。模板语法只有三条(`src/core/template.ts`)。
+
+环境提示词说明使用时机、跨工具协作和操作约束。工具 `description` 说明该工具的参数、行为与回执。
+两处不重复。
+
+## Persona–World 状态对账(PWSR)
+
+此设计仍在试验中。实现位于 `src/worlds/minecraft/world.ts`,由 World 自行管理,Core 不提供专用接口。
+
+设计原则是将路标、目标的持久语义记录交给 Persona 管理的 Memory,World 保存用于机械计算的运行时副本。
+bot 从 Memory 读取记录,再调用 World 工具登记;World 不直接读取 Memory。
+当前目标与路标遵循此方式,蓝图另有文件持久化,具体范围见下文。
+
+生命周期(realm 指 World 内的隔离域,如一个存档):
+
+1. 目标与路标按 realm 保存在内存中。首次访问 realm 时创建空表,切换时保留旧表,切回后继续使用。
+   重新创建 World 实例或清除相应存储项后表为空。World 通过事件或工具回执报告状态,提供批量登记工具。
+2. bot 自己从 Memory 找出对应的语义信息,调装载工具写入暂态;装载回执做世界核验,凡能对世界查证
+   的逐条核验,如登记位置的方块是否仍为容器。
+3. 工具回执或描述提示 bot 在语义变更后同步更新 Memory 中的记录。
+4. 对齐提醒只跟随 bot 主动的语义写操作(增、删、改名、改语义)。位置、建造进度这类高频机械变化
+   绝不催写 Memory。
+5. World 对暂态做机械计算,以事实形式进回执(距离、包含、账单、图算法)。空间事实携带维度;方位、
+   距离、包含与世界核验只在同一 realm 的同一维度内计算。
+
+Persona 自行决定恢复时机与内容。表为空时回执缺少相应信息,操作仍可执行。
+
+准入判据,三条都满足才立一张暂态表:
+
+- **需要语义输入和机械计算。** 记录由 bot 命名或定义,并供 World 计算。纯语义记录保留在 Memory;
+  可直接观察的容器内容等状态从环境读取。
+- **低频。** 语义变更预期每场数次至数十次;同步提醒只随语义写操作产生,不周期投递。
+- **可选。** 空表不阻塞操作。
+
+计算结果须区分 bot 的标记与环境事实。「路径进入了你标记的危险区」可以,
+「系统判断这里危险」不可以。
+
+Minecraft 的 `PwsrTables` 管理目标、路标及蓝图的 realm 视图,空间记录按维度隔离。
+蓝图数据由 `BlueprintBook` 管理:设计可跨 realm 使用,施工绑定按 realm 和维度保存。
+配置 `dataDir` 时,设计与绑定写入 `minecraft-blueprints.json`,在下次创建实例时加载。
+
+## 内建 World
+
+| id | 是什么 |
+|---|---|
+| `console` | WebUI 里的对话通道,与 QQ 同层级的外部平台 |
+| `qq` | 连接 OneBot v11 协议端(推荐 SnowLuma),只监听名单里的群与私聊;起草-确认门 |
+| `bilibili` | B 站直播间只读接入与本机 Overlay |
+| `minecraft` | mineflayer 客户端,观察 = 结构化文本、动作 = 异步执行器;子进程 |
+| `websearch` | 只有请求 / 响应工具,不产事件 |
+| `webui-fixture` | 开发 WebUI 与验收测试使用的 World |
+
+`vtuber`、`asr`、`pvz`、`canvas` 是扩展包(见 [extensions.md](extensions.md))。`qq`、`bilibili` 与
+`minecraft` 各有自己的 README;`src/worlds/websearch/` 最短,`src/worlds/minecraft/` 最全。
+
+## 添加 World
+
+从 `WorldDefinition` 起:`defaults()` 定配置段,`create()` 返回实现 `World` 的实例;有自定义面板就加
+`webui/client.ts`;有环境描述就加 `ENV_PROMPT.md`。测试用 `tests/helpers/fake-host.ts` 的
+`FakeHost` 记录推送。放进仓库的在 `src/worlds/index.ts` 的 id 表里登记 id 与定义的导出名;放进仓库还是做成扩展,判据在
+[CONTRIBUTING.md](../CONTRIBUTING.md)。

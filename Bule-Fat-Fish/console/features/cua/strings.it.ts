@@ -1,0 +1,30 @@
+import type { en } from './strings.ts';
+
+export const S: Partial<typeof en> = {
+  title: 'Controllo del computer',
+  enabled: 'Lascia che Coo usi questo computer',
+  control: 'Consenti mouse e tastiera',
+  controlHint: 'Se disattivato, Coo può solo guardare lo schermo.',
+  permission: 'Quando chiederti',
+  levels: { 'ask-each-turn': 'Ogni turno', 'ask-before-acting': 'Prima di agire', 'ask-once': 'Una volta', 'never-ask': 'Mai' },
+  levelHints: {
+    'ask-each-turn': 'Chiede a ogni turno prima di guardare lo schermo o usare mouse e tastiera per la prima volta.',
+    'ask-before-acting': 'Per guardare non chiede; chiede a ogni turno prima di usare mouse e tastiera per la prima volta.',
+    'ask-once': 'Per guardare non chiede; chiede una volta prima di agire, poi non più finché vale il sì.',
+    'never-ask': 'Non chiede mai.',
+  },
+  grant: 'Un sì vale',
+  grantSuffix: 'minuti',
+  grantBad: (min: number, max: number) => `Inserisci un numero intero da ${min} a ${max}`,
+  more: 'Altre impostazioni sono nella scheda Configurazione della pagina Animaletto da desktop, in modalità avanzata.',
+  saveFailed: (why: string) => `Non salvato: ${why}`,
+  enabledLabel: 'Usare il computer',
+  controlLabel: 'Mouse e tastiera',
+  riskTitle: 'Lasciare che Coo usi questo computer?',
+  riskLead: 'Una volta attivato, Coo osserverà il tuo schermo e userà mouse e tastiera. ',
+  riskDanger: 'Può essere molto pericoloso',
+  riskAfter: '; conferma di aver capito quanto segue:',
+  risks: ['Le schermate (che possono mostrare contenuti privati, come le chat) vengono inviate al servizio di modelli che usi', 'Coo può cliccare nel punto sbagliato, sbagliare a scrivere o finire nella finestra sbagliata. Assicurati sempre di poter osservare e interrompere Coo in qualsiasi momento.', 'Non affidare a Coo pagamenti, password o altro che riguardi informazioni sensibili, azioni nel mondo reale o operazioni irreversibili.'],
+  riskNote: 'Coo si ferma da solo quando usi il mouse o la tastiera. Puoi disattivare questa funzione in qualsiasi momento.',
+  riskOk: 'Attiva',
+};

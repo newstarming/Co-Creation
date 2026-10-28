@@ -1,0 +1,233 @@
+import { resolve } from 'node:path';
+
+import type { BotDefinition, BotParts, WebUiContribution } from 'cortico/bot.ts';
+import type { World } from 'cortico/core/types.ts';
+import type { LoadedConfig } from 'cortico/deploy.ts';
+import { CORE_DEFAULTS } from 'cortico/core/config.ts';
+import { describeTools, type WorldDeclaration } from 'cortico/world.ts';
+import type { WebAppCheckpointDeps } from 'cortico/web/server.ts';
+
+import { CortiSoulmate } from './persona/index.ts';
+import {
+  cortiWebUiPages,
+  type CortiResetDeps,
+} from './webui-page.ts';
+import { AUTHOR_OPERATOR } from '../cormini/persona/workspaceGit.ts';
+import { CORMINI_TOOL_DECLS, CORMINI_TOOL_SUMMARIES } from '../cormini/persona/persona.ts';
+import { SURFACE_DECL } from './persona/subconscious/index.ts';
+import { scheduleWakeSpec } from './persona/tools.ts';
+import { PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS } from './persona/config.ts';
+import type { PersonaConfig } from './persona/config.ts';
+
+import { type QQConfigSection } from 'cortico/worlds/qq/config.ts';
+import type { ConsoleConfigSection } from 'cortico/worlds/console/config.ts';
+import type { ConsoleWorld } from 'cortico/worlds/console/world.ts';
+import { type WebSearchConfigSection } from 'cortico/worlds/websearch/config.ts';
+import type { CoreConfig } from 'cortico/core/types.ts';
+
+export type { QQConfigSection, WebSearchConfigSection };
+
+/**
+ * 部署级配置组合 CoreConfig 与Persona及各挂载 World 的配置声明。
+ * CoreConfig 保持框架边界,额外配置由各挂载方拥有。
+ */
+export interface BotConfig extends CoreConfig {
+  /** 阶段长度三项与首轮对话开关归 Persona,摘思维链归 core;同住 context 段。 */
+  context: CoreConfig['context'] & PersonaConfig['context'];
+  loop: PersonaConfig['loop'];
+  memo: PersonaConfig['memo'];
+  tick: PersonaConfig['tick'];
+  dream: PersonaConfig['dream'];
+  worlds: {
+    qq: QQConfigSection;
+    console: ConsoleConfigSection;
+    websearch: WebSearchConfigSection;
+  };
+}
+
+/** 这个Persona为之设计的渠道,默认启用。 */
+const DECLARES: readonly WorldDeclaration[] = ['qq', 'console', 'websearch'];
+
+/** 层1+层2:框架默认 ← Persona的建议。World 段由启动器补。 */
+export function composeDefaults(): BotConfig {
+  return {
+    ...CORE_DEFAULTS,
+    providers: {},
+    displayName: '雪午Yukima',
+    web: { ...CORE_DEFAULTS.web, theme: 'crab-daisy' },
+    paths: { ...CORE_DEFAULTS.paths },
+    batching: { ...CORE_DEFAULTS.batching },
+    // context 分属两方:阶段长度三项归Persona,摘思维链两项归 core 的 LLM 层
+    context: { ...PERSONA_DEFAULTS.context, ...CORE_DEFAULTS.context },
+    loop: PERSONA_DEFAULTS.loop,
+    memo: PERSONA_DEFAULTS.memo,
+    tick: PERSONA_DEFAULTS.tick,
+    dream: PERSONA_DEFAULTS.dream,
+  } as unknown as BotConfig;
+}
+
+export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotParts<BotConfig> {
+  const cfg = loaded.config;
+  const persona = new CortiSoulmate({
+    memoryDir: loaded.memoryDir,
+    cfg,
+    worlds: worlds,
+    // 首轮对话由部署提供；同名模板覆盖包内默认。
+    firstTurnDir: resolve(loaded.rootDir, 'prompts'),
+    promptsDir: resolve(loaded.rootDir, 'prompts'),
+  });
+
+  return {
+    persona,
+    // Persona拥有工作区版本管理与昼夜心跳生命周期。
+    onStart: ({ core }) => {
+      persona.initGit(core.runlog.logger('persona.git'));
+      persona.startRhythm();
+    },
+    onStop: () => {
+      persona.stopRhythm();
+    },
+    webUi: webUiContribution(loaded, { persona, worlds }),
+  };
+}
+
+
+interface WebUiParts {
+  persona: CortiSoulmate;
+  /** 挂载表的活引用 */
+  worlds: World[];
+}
+
+function webUiContribution(loaded: LoadedConfig<BotConfig>, p: WebUiParts): WebUiContribution {
+  const cfg = loaded.config;
+  const { persona, worlds } = p;
+  // 梦在 core attach 后创建;WebUI 通过闭包延迟取值。
+  const dream = () => persona.dream;
+  const consoleWorld = (): ConsoleWorld | undefined => worlds.find((m) => m.id === 'console') as ConsoleWorld | undefined;
+
+  // 各 World 的环境提示词由 World 自报(webUi().promptDocs);这里只声明Persona自己那份。
+  const promptDocs = [{
+    key: 'orientation',
+    title: 'ORIENTATION',
+    description: 'Persona的存在方式与元认知说明。',
+    path: persona.textFile('ORIENTATION.md'),
+    deploymentPath: persona.textWritePath('ORIENTATION.md'),
+  }];
+
+  const checkpointDeps: WebAppCheckpointDeps = {
+    list: () => persona.git.listTags(),
+    create: (name, note) => {
+      persona.git.tag(name, note, AUTHOR_OPERATOR);
+      return `checkpoint「${name}」已创建`;
+    },
+    remove: (name) => {
+      persona.git.deleteTag(name);
+      return `checkpoint「${name}」已删除`;
+    },
+  };
+
+  // 顺序要紧:persona 先回滚,storage 的 session 项(order 10 最后清)清完即用
+  // 回滚后的 persona 重建前缀,保证"重开"落在该 checkpoint 的世界上。
+  const resetDeps: CortiResetDeps = {
+    run: async (checkpoint, parts) => {
+      let note = '';
+      try {
+        persona.git.checkoutTag(checkpoint);
+        note = `persona 已回滚到 checkpoint「${checkpoint}」`;
+      } catch (e) {
+        throw new Error(`回滚 persona 失败,未清数据: ${String(e)}`);
+      }
+      const ordered = [...parts].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const results: Array<{ key: string; ok: boolean; result: string }> = [];
+      for (const part of ordered) {
+        try {
+          results.push({ key: part.key, ok: true, result: String(await part.clear()) });
+        } catch (err) {
+          results.push({ key: part.key, ok: false, result: String(err) });
+        }
+      }
+      return { ok: results.every((r) => r.ok), persona: note, results };
+    },
+  };
+
+  // 强制入梦(那一页的「梦」面板数据面):走统一交接入口,交接后梦在后台跑。
+  const dreamDeps = {
+    trigger: (): { ok: boolean; message: string } => {
+      if (!dream().forceDreamAndTruncate()) {
+        return { ok: false, message: '入梦或交接已经在进行中,没有重复触发' };
+      }
+      return { ok: true, message: '已触发交接;交接完成后梦在后台整理工作区' };
+    },
+  };
+
+  return {
+    configGroups: [PERSONA_CONFIG_GROUP],
+    promptDocs,
+    // 梦 session 的工具 schema。
+    extraToolSchemas: () => dream().getBaseToolSchemas(),
+    status: () => ({
+      // 「梦」是人格概念,框架不认识它:自报成一枚通用筹码,状态条照文本画。
+      chips: dream().getStatus().dreaming ? [{ label: '梦中', tone: 'accent' }] : [],
+      consoleOnline: consoleWorld()?.onlineCount() ?? 0,
+      memo: { residentCap: cfg.memo.residentCap, activeCap: cfg.memo.activeCap },
+      // Persona的阶段预算与软预警线(控制台页上下文圈的分母与黄线);计数与物理上限由 core 报
+      context: {
+        maxTokens: cfg.context.maxTokens,
+        softRatio: cfg.context.softRatio,
+      },
+    }),
+    /**
+     * bot 级 WebUI 页(部署绑定的三块:存档点 / 统一重置 / 梦)。
+     *
+     * 认知绑定的三块(工作区 / Memory / 版本历史)不在这里,由Persona自报
+     * (`CortiSoulmate.webUi()`)。
+     */
+    webUiPages: (ctx) => cortiWebUiPages({
+      name: definition.id,
+      label: `${cfg.displayName || definition.id} · 部署`,
+      checkpoints: checkpointDeps,
+      status: () => persona.git.status(),
+      reset: resetDeps,
+      // 框架在问这一页时把**权威**清单交进来(core 派生 + 各 World
+      // webUi().storage + 本 bot 追加),与 /api/storage 看到的是同一批对象。
+      // 统一重置要清的正是它们;bot 自己再拼一份就是两套实现。
+      storage: () => [...ctx.storage],
+      dream: dreamDeps,
+      dreamState: () => dream().getStatus(),
+    }),
+  };
+}
+
+const definition: BotDefinition<BotConfig> = {
+  id: 'corti-soulmate',
+  // 记忆系统与 Cormini 同一套(工作区即记忆,Git 记账),分层记忆建在它上面。
+  memoryName: 'GitMem',
+  declares: DECLARES,
+  defaults: composeDefaults,
+  build,
+  describe: {
+    tools: describeTools([...CORMINI_TOOL_DECLS, scheduleWakeSpec(), SURFACE_DECL], {
+      ...CORMINI_TOOL_SUMMARIES,
+      move_file: {
+        zh: '在工作区里移动或改名文件,用来在三级备忘之间搬条目。',
+        en: 'Moves or renames a workspace file, used to shift memos between tiers.',
+      },
+      schedule_wake: {
+        zh: '定一个闹钟:到点或过几分钟再醒,期间可暂缓投递新事件。',
+        en: 'Sets a wake at a time or after some minutes, optionally holding new events until then.',
+      },
+      surface: {
+        zh: '交接后的后台整理结束时,把一小段总结交回醒着的主线。',
+        en: 'At the end of the background consolidation after a handoff, hands a short summary back to the main thread.',
+      },
+    }),
+    memory: {
+      form: {
+        zh: '工作区里的文本文件,按区分权限:笔记、容量有上限的三级备忘、只能追加的人物档案,WORLDVIEW.md 只由交接后的后台整理改写;前缀里是 MEMORY 0–4 五层快照,改动记进 git。',
+        en: 'Text files in a workspace with per-area write rules: notes, three capped memo tiers, append-only people files, and WORLDVIEW.md rewritten only by the background consolidation after a handoff; the prefix holds a five-layer snapshot (MEMORY 0–4) and changes are committed to git.',
+      },
+    },
+  },
+};
+
+export default definition;

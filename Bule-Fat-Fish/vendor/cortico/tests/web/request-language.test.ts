@@ -1,0 +1,137 @@
+/**
+ * 界面语言随请求走:同一个进程、同一批依赖,两个浏览器各按自己的语言拿到服务端文案。
+ *
+ * 真 WebApp + 真 ConsoleWorld:HTTP 看 `x-cortico-language` 头,WebSocket 握手看 `?language=`。
+ * 没带 = 部署默认语言(这里构造成 zh)。
+ */
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import WebSocket from 'ws';
+import { WebApp } from '../../src/web/server.ts';
+import { ConsoleWorld } from '../../src/worlds/console/world.ts';
+import { text as consoleText } from '../../src/worlds/console/strings.ts';
+import { ioPageContribution } from '../../src/bot.ts';
+import {
+  WEBUI_LANGUAGE_HEADER, WEBUI_LANGUAGE_QUERY, panelStreamRoute,
+  type WebUiManifest,
+} from '../../src/web/shared/webui-protocol.ts';
+import { nullLogger } from '../../src/core/util.ts';
+import { LANGUAGES, type Language } from '../../src/core/language.ts';
+import { serverText } from '../../src/web/strings.ts';
+import { botText } from '../../src/strings.ts';
+import { FakeHost } from './fakes.ts';
+
+let app: WebApp;
+let port: number;
+let host: FakeHost;
+let world: ConsoleWorld;
+let dir: string;
+
+const base = () => `http://127.0.0.1:${port}`;
+const headers = (language?: Language): Record<string, string> =>
+  language ? { [WEBUI_LANGUAGE_HEADER]: language } : {};
+const getJson = async <T>(path: string, language?: Language): Promise<T> =>
+  (await fetch(`${base()}${path}`, { headers: headers(language) })).json() as Promise<T>;
+const postJson = async <T>(path: string, language?: Language): Promise<T> =>
+  (await fetch(`${base()}${path}`, { method: 'POST', headers: headers(language) })).json() as Promise<T>;
+
+/** 连一条控制台流,等第一帧(开场白)回来。 */
+async function firstFrame(query: string): Promise<string> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}${panelStreamRoute('world:console', 'chat')}${query}`);
+  const text = await new Promise<string>((res, rej) => {
+    ws.once('message', (d) => res(String((JSON.parse(d.toString()) as { text: string }).text)));
+    ws.once('error', rej);
+  });
+  ws.close();
+  return text;
+}
+
+beforeAll(async () => {
+  dir = mkdtempSync(join(tmpdir(), 'webtest-language-'));
+  host = new FakeHost();
+  world = new ConsoleWorld({ timezone: 'Asia/Shanghai' });
+  await world.start(host);
+  app = new WebApp({
+    store: host.store,
+    memoryDir: dir,
+    dataDir: dir,
+    language: 'zh',
+    getStatus: () => ({}),
+    run: {
+      pause: () => {}, resume: () => {}, isPaused: () => false,
+      shutdown: async () => ({ complete: true, steps: [{ label: 'flush', ok: true, elapsedMs: 1 }] }),
+    },
+    storage: (language) => [{
+      key: 'demo', owner: 'core', kind: 'memory', label: language === 'en' ? 'Demo' : '演示',
+      stat: () => '', clear: () => (language === 'en' ? 'cleared' : '已清'),
+    }],
+    webUiPageSources: () => [{
+      id: 'world:console',
+      contribute: (language) => ioPageContribution('console', '控制台对话', undefined, world, language),
+    }],
+    log: nullLogger(),
+  });
+  port = await app.start(0);
+});
+
+afterAll(async () => {
+  await world.stop();
+  await app.stop();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe('每个请求自带界面语言', () => {
+  it('HTTP 头选语言;没带头 = 部署默认', async () => {
+    const zh = await postJson<{ result: string }>('/api/run/pause');
+    const en = await postJson<{ result: string }>('/api/run/pause', 'en');
+    expect(zh.result).toBe('已暂停:事件照常落库排队,不投递唤醒');
+    expect(en.result).toBe('Paused: events are still stored and queued, no wake is delivered');
+  });
+
+  it('manifest 里贡献方的文案按请求语言现算,页 id 不变', async () => {
+    const zh = await getJson<WebUiManifest>('/api/webui/manifest', 'zh');
+    const en = await getJson<WebUiManifest>('/api/webui/manifest', 'en');
+    expect(zh.providers.map((p) => p.id)).toEqual(en.providers.map((p) => p.id));
+    expect(zh.providers[0].label).toBe('控制台对话');
+    expect(en.providers[0].label).toBe('Console chat');
+    expect(en.providers[0].prompts?.[0]?.title).toBe('Console · Environment prompt');
+  });
+
+  it('存储清单与清除回执按请求语言', async () => {
+    const zh = await getJson<{ parts: Array<{ label: string }> }>('/api/storage');
+    const en = await getJson<{ parts: Array<{ label: string }> }>('/api/storage', 'en');
+    expect(zh.parts[0].label).toBe('演示');
+    expect(en.parts[0].label).toBe('Demo');
+    const cleared = await postJson<{ result: string }>('/api/storage/clear?key=demo', 'en');
+    expect(cleared.result).toBe('cleared');
+  });
+
+  it('关机回执的整句与接口报错按请求语言', async () => {
+    const zh = await postJson<{ result: string }>('/api/run/shutdown');
+    const en = await postJson<{ result: string }>('/api/run/shutdown', 'en');
+    const receipt = (t: ReturnType<typeof serverText>) => t.powerReceipt(t.shutdownComplete(1), '', t.exitShutdown);
+    expect(zh.result).toBe(receipt(serverText('zh')));
+    expect(en.result).toBe(receipt(serverText('en')));
+    expect((await getJson<{ error: string }>('/api/extensions', 'en')).error).toBe(serverText('en').extensionsUnavailable);
+  });
+
+  it('关机回执在每种语言里不叠用句末标点,人工动作自带或不带句号都一样', () => {
+    for (const language of LANGUAGES) {
+      const t = serverText(language);
+      const items = [botText(language).shutdown.manualCheck, 'x']
+        .map((manual) => t.externalItem('w', 'unknown', 'd', manual));
+      const receipt = t.powerReceipt(t.shutdownComplete(2), t.externalUnverified(items), t.exitShutdown);
+      expect(receipt, language).not.toMatch(/[.。][.。,，;；]/u);
+    }
+  });
+
+  it('WebSocket 握手的查询串选语言,那条流上的系统提示按它给', async () => {
+    expect(await firstFrame('')).toContain('报上名字');
+    expect(await firstFrame(`?${WEBUI_LANGUAGE_QUERY}=en`)).toContain('introduce yourself');
+    // 其他语言读它自己的表;不认识的值当没带
+    expect(await firstFrame(`?${WEBUI_LANGUAGE_QUERY}=fr`)).toContain(consoleText('fr').greeting);
+    expect(await firstFrame(`?${WEBUI_LANGUAGE_QUERY}=xx`)).toContain('报上名字');
+  });
+});

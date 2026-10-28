@@ -1,0 +1,274 @@
+/*
+ * The settings window's own layer over styles.css (scripts/stage.ts adds it last): the rail (folding, the
+ * logo, the two modes, the foot), one heading and one content width for every page, icon lines, the check
+ * boxes, and what text can be selected. Only the theme's color variables are used.
+ */
+
+/* ---------- compact navigation ---------- */
+body.companion-sidebar {
+  --titlebar-height: 36px; --rail-motion: 260ms cubic-bezier(.22, 1, .36, 1);
+  display: flex; height: 100dvh; padding-top: var(--titlebar-height); overflow: hidden;
+}
+.companion-titlebar {
+  position: fixed; inset: 0 0 auto; height: var(--titlebar-height); z-index: 110;
+  background: var(--paper-2); color: var(--ink-soft); app-region: drag;
+  box-shadow: inset 0 -1px color-mix(in srgb, var(--border) 50%, transparent);
+}
+/* The overlay's available area also excludes left-side window controls on Linux. */
+.companion-titlebar-actions {
+  position: absolute; inset: 0 max(64px, calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 8px)) 0 max(8px, calc(env(titlebar-area-x, 0px) + 8px));
+  display: flex; align-items: center; gap: 2px;
+}
+.companion-titlebar[data-platform="darwin"] .companion-titlebar-actions { left: max(86px, calc(env(titlebar-area-x, 0px) + 8px)); }
+.companion-titlebar button {
+  display: grid; place-items: center; flex: none; width: 32px; height: 28px; padding: 5px; border: 0; border-radius: 6px;
+  background: transparent; color: inherit; cursor: pointer; app-region: no-drag;
+}
+.companion-titlebar button:hover:enabled { background: var(--hover); color: var(--foreground); }
+.companion-titlebar button:disabled { opacity: .3; cursor: default; }
+.companion-titlebar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.companion-titlebar button > svg { width: 18px; height: 18px; }
+.companion-titlebar-release {
+  display: flex; align-items: center; gap: 14px; min-width: 0; height: 16px;
+  margin-left: 8px; padding-left: 10px; border-left: 1px solid var(--border);
+  font-size: 11px; line-height: 16px; white-space: nowrap;
+}
+.companion-titlebar-release a { text-decoration: none; }
+.companion-titlebar-release a:hover { text-decoration: underline; }
+.companion-titlebar-release a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.companion-version { flex: none; color: var(--ink-dim); app-region: no-drag; }
+.companion-version:hover { color: var(--ink); }
+.companion-update { min-width: 0; }
+.companion-update:empty { display: none; }
+.companion-update .release-hint { display: block; overflow: hidden; text-overflow: ellipsis; color: var(--ink-soft); app-region: no-drag; }
+.companion-update a.release-hint { color: var(--accent); }
+.companion-sidebar-chevron { transform-origin: 15px 12px; transition: transform var(--rail-motion); }
+.companion-sidebar-toggle[aria-expanded="false"] .companion-sidebar-chevron { transform: rotate(180deg); }
+#rail {
+  width: 248px; height: 100%; flex: none; position: relative; z-index: 10;
+  border-right: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  transition: width var(--rail-motion);
+}
+#rail.is-collapsed { width: 72px; }
+#rail .brand { display: block; flex: none; min-width: 0; padding: 20px 18px 10px; overflow: hidden; }
+/* open, the C's left edge is on the nav icons'; collapsed, the small C is centred on them (the rail's middle, x=36) */
+.companion-lockup { margin-left: 11px; width: 174px; height: 39px; overflow: hidden; color: var(--foreground); transition: width var(--rail-motion), margin-left var(--rail-motion); }
+.is-collapsed .companion-lockup { width: 36px; margin-left: .5px; }
+.companion-brand { display: block; width: 174px; height: auto; }
+.companion-brand .accent { stroke: var(--accent); }
+.companion-brand-c, .companion-brand-o-first, .companion-brand-o-second { transition: transform var(--rail-motion); }
+.companion-brand-c { transform: translate(-22px, 28px) scale(.5); }
+.companion-brand-o-first { transform: translate(-42.80151519px, -65.5px) scale(1.5); }
+.companion-brand-o-second { transform: translate(-38.80151519px, -65.5px) scale(1.5); }
+.companion-brand-tail { opacity: 1; transition: opacity var(--rail-motion), transform var(--rail-motion); }
+.is-collapsed .companion-brand-c,
+.is-collapsed .companion-brand-o-first,
+.is-collapsed .companion-brand-o-second { transform: translate(-20px, 6px) scale(.7); }
+.is-collapsed .companion-brand-tail { opacity: 0; transform: translateX(-18px); }
+
+#rail nav.stack {
+  display: block; padding: 8px 12px 32px; overflow-x: hidden; overflow-y: auto; scrollbar-width: none;
+  scroll-padding-block: 32px;
+  mask-image: linear-gradient(to left, #000 var(--rail-scrollbar-width, 0px), transparent var(--rail-scrollbar-width, 0px)),
+    linear-gradient(to bottom, var(--rail-top-mask, #000), #000 32px, #000 calc(100% - 32px), transparent);
+}
+#rail nav.stack.is-scrolled { --rail-top-mask: transparent; }
+/* The native scrollbar uses 10px of the existing right padding, preserving item width. */
+#rail:not(.is-collapsed) nav.stack {
+  --rail-scrollbar-width: 10px;
+  scrollbar-width: auto; scrollbar-gutter: stable; padding-right: calc(12px - var(--rail-scrollbar-width));
+}
+#rail nav.stack::-webkit-scrollbar-thumb,
+#kernel-root ::-webkit-scrollbar-thumb { background-color: transparent; }
+#rail:hover nav.stack::-webkit-scrollbar-thumb,
+#kernel-root:hover ::-webkit-scrollbar-thumb { background-color: var(--line-2); }
+#rail nav.stack::-webkit-scrollbar-thumb:hover,
+#rail nav.stack::-webkit-scrollbar-thumb:active,
+#kernel-root ::-webkit-scrollbar-thumb:hover,
+#kernel-root ::-webkit-scrollbar-thumb:active { background-color: var(--line-strong); }
+#rail .navgroup { display: flex; }
+#rail .navgroup-primary + .navgroup-primary { margin-top: 4px; }
+#rail .stacklabel {
+  display: block; height: 16px; margin: 6px 12px 8px; line-height: 16px; white-space: nowrap; overflow: hidden; background: transparent;
+  transition: height var(--rail-motion), margin var(--rail-motion), color 120ms ease, background-color var(--rail-motion);
+}
+#rail .navitem, #rail .companion-mode {
+  /* 14px in: the icons' middle is the collapsed rail's, x=36, where the logo, the avatar and the foot's buttons sit too */
+  position: relative; min-height: 40px; padding: 9px 13px 9px 14px; gap: 12px; border: 0; border-radius: 10px;
+  background: transparent; color: var(--muted-foreground); text-decoration: none;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+#rail .navitem .navicon, #rail .companion-mode .navicon { width: 20px; height: 20px; }
+#rail .navitem .lbl, #rail .companion-mode .lbl { white-space: nowrap; }
+#rail .navitem:hover, #rail .companion-mode:hover { background: var(--hover); color: var(--foreground); }
+#rail .navitem.active { background: color-mix(in srgb, var(--accent) 11%, transparent); color: var(--foreground); }
+#rail .navitem.active::after {
+  content: ''; position: absolute; left: 1px; top: 13px; bottom: 13px; width: 3px;
+  border-radius: 3px; background: var(--accent);
+}
+#rail .navmodule-list .navitem { padding-left: 10px; }
+#rail .companion-module-icon { display: none; }
+#rail .companion-mode { flex: none; margin: 8px 12px; font: 450 13px/1.35 var(--sans); overflow: hidden; }
+/* the foot's buttons keep one place, 16px in, whether the rail is open, closed or on its way; packed against the
+   bottom, so while its height animates (rail/index.ts) they stay put relative to the window's bottom */
+#rail .railfoot { display: flex; flex: none; flex-wrap: wrap; align-content: flex-end; padding: 12px 16px 16px; gap: 10px; border-top: 1px solid var(--border); overflow: hidden; }
+/* the avatar and the name at the very bottom, the keys above them: open a row, folded a column of pause, shut down, avatar;
+   the avatar is centred on the icons (x=36) open and folded alike, so folding does not move it */
+#rail .rail-who { flex-basis: 100%; order: 1; padding-top: 10px; border-top: 1px solid var(--border); }
+#rail .rail-actions { width: 100%; gap: 6px; justify-content: flex-start; }
+#rail .companion-runstate { margin-left: 2px; }
+#rail .rail-action { flex: none; width: 40px; height: 32px; }
+#rail .rail-action[hidden] { display: none; }
+#rail .companion-mode:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+/* the words fade out quickly as the rail starts to narrow, and back in once it has mostly widened */
+#rail .lbl, #rail .rail-name, #rail .rail-rename, #rail .companion-runstate { transition: opacity 160ms ease 120ms, visibility 0s linear 0s; }
+#rail.is-collapsed .lbl, #rail.is-collapsed .rail-name, #rail.is-collapsed .rail-rename,
+#rail.is-collapsed .companion-runstate { opacity: 0; visibility: hidden; transition: opacity 100ms ease, visibility 0s linear 100ms; }
+#rail.is-collapsed .companion-runstate { position: absolute; }
+#rail.is-collapsed .stacklabel { height: 1px; margin: 8px 10px; background-color: var(--border); color: transparent; }
+#rail.is-collapsed .navmodule-list { margin: 0; padding: 0; gap: 4px; }
+#rail.is-collapsed .navmodule-list::before, #rail.is-collapsed .navmodule-list .navitem::before { display: none; }
+#rail.is-collapsed .companion-module-icon { display: block; }
+#rail.is-collapsed .navmodule-list .navitem { padding-left: 14px; }
+#rail.is-collapsed .navlamps { position: absolute; right: 5px; bottom: 5px; padding: 0; gap: 2px; }
+#rail.is-collapsed .navdot { width: 4px; height: 4px; }
+#rail.is-collapsed .railfoot { flex-direction: column; flex-wrap: nowrap; justify-content: flex-end; align-items: flex-start; }
+/* folded, the line over the avatar spans the column */
+#rail.is-collapsed .rail-who { flex: none; align-self: stretch; }
+/* folded, pause/resume over shut down (the keys' row has shut down first) */
+#rail.is-collapsed .rail-actions { flex-direction: column-reverse; align-items: flex-start; }
+/* in the normal mode the folded rail has no mode button: it folds away with the rail */
+.companion-normal #rail .companion-mode {
+  height: 40px;
+  transition: background-color 140ms ease, color 140ms ease, height var(--rail-motion), margin var(--rail-motion), padding var(--rail-motion), opacity 160ms ease;
+}
+.companion-normal #rail.is-collapsed .companion-mode { height: 0; min-height: 0; margin-block: 0; padding-block: 0; opacity: 0; visibility: hidden; }
+
+/* 窄屏侧栏的遮罩 101、侧栏 102、提示 103:在页面元素之上,在弹窗(120)与 toast(130)之下 */
+.companion-sidebar-tooltip {
+  position: fixed; z-index: 103; width: max-content; max-width: min(280px, calc(100vw - 100px));
+  padding: 7px 11px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--foreground); color: var(--background); box-shadow: 0 4px 16px #0002;
+  font: 500 12px/1.5 var(--sans); overflow-wrap: anywhere; pointer-events: none;
+}
+.companion-sidebar-tooltip[hidden], .companion-sidebar-backdrop[hidden] { display: none; }
+.companion-sidebar-backdrop { display: none; }
+
+@media (min-width: 721px) {
+  .scroll, .pagehead { padding-left: var(--page-gutter); padding-right: var(--page-gutter); }
+}
+@media (max-width: 720px) {
+  body.companion-sidebar { padding-left: 72px; }
+  #rail { position: fixed; inset: var(--titlebar-height) auto 0 0; height: calc(100% - var(--titlebar-height)); z-index: 102; border-bottom: 0; }
+  #rail:not(.is-collapsed) { box-shadow: 12px 0 40px #0002; }
+  .companion-sidebar-backdrop { display: block; position: fixed; inset: var(--titlebar-height) 0 0; z-index: 101; border: 0; padding: 0; background: #0003; }
+  .companion-sidebar #kernel-root { height: 100%; }
+}
+
+/* ---------- one heading and one content width on every page ---------- */
+/* A title line also fits the 34px page controls without shifting its text baseline. */
+.featureintro .pagetitle { line-height: 34px; }
+.featureintro .pagedesc { line-height: 22px; }
+/* the page's controls sit at the right of the title row */
+.featureintro:has(> .companion-introacts) { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; align-items: center; }
+.featureintro:has(> .companion-introacts) > :not(.companion-introacts) { grid-column: 1; }
+.featureintro > .companion-introacts { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 8px; }
+
+/* 对话: the same heading and width as the other pages; the thread scrolls under it, the scrollbar at the window's edge */
+.featureslot-chat { padding: 0; overflow: hidden; scrollbar-gutter: auto; }
+.featureslot-chat > .chatview { max-width: none; }
+.chatview > .featureintro {
+  flex: none; position: static; overflow: hidden; scrollbar-gutter: stable both-edges;
+  margin: 0; padding: 30px var(--page-gutter) 0; border-bottom: 0;
+}
+.chatview > .featureintro > * { width: 100%; max-width: var(--content-width); margin-inline: auto; }
+.chatview > .featureintro > .pagedesc:last-child { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.chat-note-line { display: flex; align-items: center; gap: 12px; }
+.chat-note-line .chat-trace { margin-left: auto; padding: 0 6px; font-size: inherit; line-height: inherit; }
+.chat-scroll { scrollbar-gutter: stable both-edges; padding-left: var(--page-gutter); padding-right: var(--page-gutter); }
+.chat-thread { max-width: var(--content-width); }
+.chat-dock { padding-left: calc(var(--page-gutter) + 10px); padding-right: calc(var(--page-gutter) + 10px); }
+.chat-dock > * { max-width: var(--content-width); }
+.chat-queue { max-width: calc(var(--content-width) - 28px); }
+
+/* ---------- icons: one line weight at every size ---------- */
+/* the console's line icons, the composer's, and the pet's that pages borrow are all drawn on 24 units */
+svg[viewBox="0 0 24 24"][stroke="currentColor"] { stroke-width: 1.6px; }
+svg[viewBox="0 0 24 24"][stroke="currentColor"] * { vector-effect: non-scaling-stroke; }
+
+/* ---------- only what can be edited, and what was said or ran (the conversation, the run trace, code), can be selected ---------- */
+body { -webkit-user-select: none; user-select: none; }
+input, textarea, [contenteditable]:not([contenteditable="false"]), [contenteditable]:not([contenteditable="false"]) *,
+.chat-thread .bubble, .pet-bubble.say, .pet-bubble .b-text, .tlscroll, pre, code {
+  -webkit-user-select: text; user-select: text;
+}
+
+/* 语音输入: the pet World's panel; its first card is titled like the page */
+.companion-voicebox .sheet:first-of-type > h3 { display: none; }
+.companion-voicebox .sheet:first-of-type { padding-top: 0; }
+
+/* 控制台: the heading as on 对话; the live band and the timeline keep the content width */
+.featureslot-live { scrollbar-gutter: auto; }
+.liveview > .featureintro {
+  flex: none; position: static; overflow: hidden; scrollbar-gutter: stable both-edges;
+  margin: 0; padding: 30px var(--page-gutter) 0; border-bottom: 0;
+}
+.liveview > .featureintro > * { width: 100%; max-width: var(--content-width); margin-inline: auto; }
+.liveview > .featureintro > .pagetitle { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.tlscroll { scrollbar-gutter: stable both-edges; padding-left: var(--page-gutter); padding-right: var(--page-gutter); }
+.tlinner, .tlthink { max-width: var(--content-width); }
+
+/* ---------- the rail's foot: the run state in words, both states in color ---------- */
+.rail-actions { align-items: center; }
+.companion-runstate { font: 600 12.5px/1 var(--sans); color: var(--accent); white-space: nowrap; cursor: pointer; }
+.companion-runstate.paused { color: var(--warn); }
+.companion-runstate[hidden] { display: none; }
+.rail-run.paused { color: var(--warn); }
+.rail-run.paused:hover { color: var(--warn); }
+
+/* ---------- changing modes: entries fade in and out, the button gives a little ---------- */
+@keyframes companion-enter { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+@keyframes companion-leave { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(-6px); } }
+#rail .companion-enter { animation: companion-enter 200ms cubic-bezier(.22, 1, .36, 1) both; }
+#rail .companion-leave { animation: companion-leave 200ms ease both; pointer-events: none; }
+@keyframes companion-press { 0% { transform: scale(1); } 40% { transform: scale(.95); } 100% { transform: scale(1); } }
+@keyframes companion-turn { from { transform: rotate(-90deg); opacity: .3; } to { transform: none; opacity: 1; } }
+#rail .companion-mode.companion-pressed { animation: companion-press 260ms ease; }
+#rail .companion-mode.companion-pressed .navicon { animation: companion-turn 320ms cubic-bezier(.22, 1, .36, 1); }
+#rail .companion-mode:active { transform: scale(.97); }
+/* with less motion asked for, the rail folds at once (its width, the logo, the words, the link under the version) and modes change without fading */
+@media (prefers-reduced-motion: reduce) {
+  #rail .companion-enter, #rail .companion-leave, #rail .companion-mode.companion-pressed, #rail .companion-mode.companion-pressed .navicon { animation: none; }
+  body.companion-sidebar { --rail-motion: 0s linear; }
+  #rail .lbl, #rail .rail-name, #rail .rail-rename, #rail .companion-runstate, #rail .stacklabel { transition: none; }
+}
+
+/* 换模式时只藏起普通模式不列的项(rail/index.ts),导航项自带 display,要显式让 hidden 生效 */
+#rail nav.stack .navitem[hidden], #rail nav.stack .navgroup[hidden] { display: none; }
+
+/* ---------- checkboxes and radio buttons: drawn here, in exactly the switches' green (var(--accent)) in every scheme ----------
+   the browser's own boxes (accent-color) pick their own shade and check color; switches are drawn elsewhere and left out.
+   Low specificity (one element), so a page's own size for them still wins. */
+input:where([type="checkbox"], [type="radio"]):where(:not(.pet-switch, .companion-control > .check > input, .companion-switchbox > .check > input)) {
+  appearance: none; -webkit-appearance: none; flex: none; box-sizing: border-box; width: 16px; height: 16px;
+  border: 1.5px solid var(--line-strong); border-radius: 4px; background: var(--background) center / 12px 12px no-repeat;
+  vertical-align: middle; cursor: pointer; transition: background-color .15s, border-color .15s;
+  &:where([type="radio"]) { border-radius: 50%; }
+  &:checked { border-color: var(--accent); background-color: var(--accent); }
+  &:where([type="checkbox"]):checked {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23fff' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.6 6.2 5 8.5l4.4-4.9'/%3E%3C/svg%3E");
+  }
+  &:where([type="radio"]):checked { background-image: radial-gradient(circle, #fff 0 2.6px, transparent 3.2px); background-size: 100% 100%; }
+  &:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  &:disabled { opacity: .5; cursor: default; }
+  /* Windows high contrast drops background images, the check mark with them: the browser's own boxes there */
+  @media (forced-colors: active) { appearance: auto; -webkit-appearance: auto; }
+}
+
+/* the dialog before computer use is turned on (features/cua) */
+.cua-risk-lead { margin: 0 0 10px; color: var(--ink); }
+.cua-risks { margin: 0 0 12px; padding-left: 1.3em; list-style: disc; display: flex; flex-direction: column; gap: 6px; color: var(--danger); line-height: 1.55; }
+.cua-risk-note { margin: 0 0 14px; font-size: 13px; color: var(--ink-soft); }

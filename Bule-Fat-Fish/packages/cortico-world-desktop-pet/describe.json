@@ -1,0 +1,694 @@
+{
+  "tools": [
+    {
+      "name": "pet_say",
+      "description": "Say something in a speech bubble above the pet. Expressions and motions go into the script as markers: 【…】 plays them first and then starts a new bubble; <…> plays them when the typing reaches that point. The receipt says roughly how long it stays on screen; a non-empty script fails when the pet window is not connected.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "script": {
+            "type": "string",
+            "description": "What to say, with optional 【expression, motion】 and <expression> markers. One or two sentences per bubble. May be empty when images carry the message. Do not call this when you have nothing to say."
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Images to show the person with this line, each given by the handle that starts a [blob …] line in your context. They appear on the chat page only, not in the bubble."
+          }
+        },
+        "required": [
+          "script"
+        ]
+      },
+      "tags": [
+        "speak"
+      ],
+      "summary": {
+        "zh": "在桌宠头顶的气泡里说话,可在话里穿插表情与动作。",
+        "en": "Speaks in a bubble above the pet, with expressions and motions in between."
+      }
+    },
+    {
+      "name": "pet_ask",
+      "description": "Show a question bubble with up to 3 options under it, plus by default a box for the person to write their own answer. Returns at once; the answer arrives later as an event, and so does closing the question unanswered. A new pet_say or pet_ask replaces a question not yet answered.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "The question, one sentence."
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "description": "1–3 short options, at most 40 characters each; longer ones are cut."
+          },
+          "allowOwnAnswer": {
+            "type": "boolean",
+            "description": "Offer a box for writing an own answer; default true."
+          }
+        },
+        "required": [
+          "question",
+          "options"
+        ]
+      },
+      "tags": [
+        "speak"
+      ],
+      "summary": {
+        "zh": "弹出带至多 3 个选项的提问气泡,回答之后作为事件送回。",
+        "en": "Asks a question in a bubble with up to 3 options; the answer comes back later as an event."
+      }
+    },
+    {
+      "name": "pet_move_to",
+      "description": "Go somewhere on the screen the pet is on: walk (or run) along its bottom edge to a position, or go to one of the targets the current figure has of its own, which the environment section lists when it has any. Returns on arrival or interruption, after 30 seconds at most.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "description": "Target: a number from 0 to 1 (a fraction of the width of the screen the pet is on, 0 leftmost, 1 rightmost), left / center / right / cursor (the horizontal position of the mouse pointer), or the id of one of the current figure's own targets.",
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "run": {
+            "type": "boolean",
+            "description": "true to run; walks by default."
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 2,
+            "description": "Only for a figure's own target that takes numbers: them, in the order the environment section lists them."
+          }
+        },
+        "required": [
+          "to"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "沿屏幕底边走到或跑到某个位置,或去形象包自带的目标。",
+        "en": "Walks or runs along the bottom edge of the screen to a position, or goes to one of the figure pack's own targets."
+      }
+    },
+    {
+      "name": "pet_set",
+      "description": "Change your own looks and habits. Depending on the person's settings, some items take effect at once and others are first asked of the person in a bubble, changing only if they agree, with the receipt coming after their answer; the environment section says which items are which, and the values to choose from. Give only the items to change.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "figure": {
+            "type": "string",
+            "description": "Figure: coo, or the id of an installed figure. Switching to a figure pack without a scheme puts on its first one."
+          },
+          "scheme": {
+            "type": "string",
+            "description": "The dress of the current figure (or of the one being switched to): a preset id, or one option per axis joined with - in axis order (for Coo: palette-head-side-glasses-neck)."
+          },
+          "roam": {
+            "type": "string",
+            "enum": [
+              "free",
+              "calm",
+              "off"
+            ],
+            "description": "Walking about: free walks often, calm mostly stays put, off does not wander."
+          },
+          "snoreSeconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600,
+            "description": "Seconds of snoring each time you fall asleep; 0 snores until you wake."
+          },
+          "sound": {
+            "type": "boolean",
+            "description": "Sound effects on or off."
+          },
+          "scale": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 10,
+            "description": "Size on screen, 1 being the default."
+          },
+          "bubbleSize": {
+            "type": "number",
+            "minimum": 0.8,
+            "maximum": 1.6,
+            "description": "Width, padding, corners and tail of the speech bubbles (yours and the person's), 1 being the default; the text keeps its size."
+          },
+          "fontSize": {
+            "type": "number",
+            "minimum": 0.8,
+            "maximum": 1.6,
+            "description": "Size of the text in the speech bubbles, 1 being the default; the bubbles keep their width."
+          },
+          "theme": {
+            "type": "string",
+            "enum": [
+              "dark",
+              "light"
+            ],
+            "description": "dark is night (light body), light is day (dark body)."
+          },
+          "hoverButtons": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "chat",
+                "voice",
+                "roam",
+                "theme",
+                "sound",
+                "dress",
+                "hide"
+              ]
+            },
+            "maxItems": 6,
+            "description": "The buttons beside you while the mouse pointer rests on you."
+          },
+          "user": {
+            "type": "string",
+            "maxLength": 20,
+            "description": "What you call the person, at most 20 characters."
+          }
+        }
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "修改桌宠自己的外观与习惯;按使用者的设置直接生效,或先在气泡里询问。",
+        "en": "Changes the pet's own looks and habits, at once or after asking in a bubble, as the person's settings say."
+      }
+    },
+    {
+      "name": "pet_quiet",
+      "description": "Keep quiet for a while: by default sound effects off and standing still, restored when the time is up; the settings stay as they are. If the person changes sound or walking themselves meanwhile, their choice holds and the quiet ends early. minutes 0 ends it now.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "minutes": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1440,
+            "description": "Minutes of quiet."
+          },
+          "sound": {
+            "type": "boolean",
+            "description": "Sound effects during the quiet; default false."
+          },
+          "roam": {
+            "type": "string",
+            "enum": [
+              "off",
+              "calm"
+            ],
+            "description": "Walking during the quiet; default off."
+          }
+        },
+        "required": [
+          "minutes"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "安静一段时间:关掉音效、停止走动,到时恢复。",
+        "en": "Keeps quiet for a while: sound effects off and standing still until the time is up."
+      }
+    },
+    {
+      "name": "pet_act",
+      "description": "Play a sequence of expressions or motions without speaking (the current figure's vocabulary is in the environment section). Returns at once; words marked as held until the next action stay on.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 6,
+            "description": "Expression or motion words, played in order."
+          }
+        },
+        "required": [
+          "actions"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "不说话,播放一串表情或动作。",
+        "en": "Plays a sequence of expressions or motions without speaking."
+      }
+    },
+    {
+      "name": "pet_cua_open_settings",
+      "description": "Computer use is off. Open the settings window at its switch, where the person reads what turning it on risks and can turn it on. Only after the person has agreed to open it.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "电脑操作关着时,把设置窗口打开到它的开关,附风险说明。",
+        "en": "While computer use is off, opens the settings window at its switch, with what it risks."
+      }
+    },
+    {
+      "name": "pet_cua_screenshot",
+      "description": "Capture one display. Returns the scaled image (with the mouse pointer drawn on it), its size and the display's, the other displays, the pointer position and the title of the foreground window. Later coordinates are pixels of this screenshot.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "display": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Display number, 1 = leftmost; omitted: the display looked at last, at first the one holding the foreground window"
+          }
+        },
+        "required": []
+      },
+      "tags": [
+        "read",
+        "snapshot"
+      ],
+      "summary": {
+        "zh": "截取一块显示器,附鼠标位置与前台窗口标题。",
+        "en": "Captures one display, with the pointer position and the foreground window title."
+      }
+    },
+    {
+      "name": "pet_cua_zoom",
+      "description": "Capture a region of the latest screenshot's display again at full resolution, for small text or icons the scaled screenshot blurs. The region is given in screenshot pixels; the zoomed image is for reading only.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Horizontal position, in pixels of the latest screenshot"
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Vertical position, in pixels of the latest screenshot"
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Width in screenshot pixels"
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Height in screenshot pixels"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "width",
+          "height"
+        ]
+      },
+      "tags": [
+        "read",
+        "snapshot"
+      ],
+      "summary": {
+        "zh": "按原始分辨率重截截图里的一块,读看不清的小字。",
+        "en": "Captures a region of the screenshot again at full resolution, for small text."
+      }
+    },
+    {
+      "name": "pet_cua_click",
+      "description": "Move the mouse to (x, y) and click.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Horizontal position, in pixels of the latest screenshot"
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Vertical position, in pixels of the latest screenshot"
+          },
+          "button": {
+            "type": "string",
+            "enum": [
+              "left",
+              "right",
+              "middle"
+            ],
+            "description": "Default left"
+          },
+          "clicks": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3,
+            "description": "1 single click (default), 2 double click, 3 triple click"
+          },
+          "screenshot": {
+            "type": "boolean",
+            "description": "Attach a screenshot afterwards; defaults to the configuration (attach). Leave it out only for a step whose result you do not need to see; after a step that may open a window or dialog, look before typing."
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "把鼠标移到某处并点击。",
+        "en": "Moves the mouse to a point and clicks."
+      }
+    },
+    {
+      "name": "pet_cua_move",
+      "description": "Only move the mouse to (x, y), without clicking; for hovering to bring up a tooltip or a menu.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Horizontal position, in pixels of the latest screenshot"
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Vertical position, in pixels of the latest screenshot"
+          },
+          "screenshot": {
+            "type": "boolean",
+            "description": "Attach a screenshot afterwards; defaults to the configuration (attach). Leave it out only for a step whose result you do not need to see; after a step that may open a window or dialog, look before typing."
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "只移动鼠标,不点击。",
+        "en": "Moves the mouse without clicking."
+      }
+    },
+    {
+      "name": "pet_cua_drag",
+      "description": "Hold the left button down, drag from `from` to `to`, and release. Both points are on the display of the latest screenshot.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] start"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] end"
+          },
+          "screenshot": {
+            "type": "boolean",
+            "description": "Attach a screenshot afterwards; defaults to the configuration (attach). Leave it out only for a step whose result you do not need to see; after a step that may open a window or dialog, look before typing."
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "按住左键从一处拖到另一处。",
+        "en": "Drags with the left button from one point to another."
+      }
+    },
+    {
+      "name": "pet_cua_scroll",
+      "description": "Move the mouse to (x, y) and turn the wheel. Positive down scrolls down, negative up; positive right scrolls right. Units are wheel notches.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Horizontal position, in pixels of the latest screenshot"
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Vertical position, in pixels of the latest screenshot"
+          },
+          "down": {
+            "type": "integer",
+            "minimum": -30,
+            "maximum": 30
+          },
+          "right": {
+            "type": "integer",
+            "minimum": -30,
+            "maximum": 30
+          },
+          "screenshot": {
+            "type": "boolean",
+            "description": "Attach a screenshot afterwards; defaults to the configuration (attach). Leave it out only for a step whose result you do not need to see; after a step that may open a window or dialog, look before typing."
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "在某处滚动鼠标滚轮。",
+        "en": "Turns the mouse wheel at a point."
+      }
+    },
+    {
+      "name": "pet_cua_type",
+      "description": "Type text at the current input focus (any language, whatever state the input method is in); \\n presses Enter once. Click where the text goes first.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "screenshot": {
+            "type": "boolean",
+            "description": "Attach a screenshot afterwards; defaults to the configuration (attach). Leave it out only for a step whose result you do not need to see; after a step that may open a window or dialog, look before typing."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "在当前输入焦点输入文字。",
+        "en": "Types text at the current input focus."
+      }
+    },
+    {
+      "name": "pet_cua_key",
+      "description": "Press a key or a key combination. Join keys pressed together with +, and separate keys pressed one after another with spaces: \"ctrl+s\", \"alt+f4\", \"ctrl+a delete\", \"enter\", \"win\".",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "string"
+          },
+          "screenshot": {
+            "type": "boolean",
+            "description": "Attach a screenshot afterwards; defaults to the configuration (attach). Leave it out only for a step whose result you do not need to see; after a step that may open a window or dialog, look before typing."
+          }
+        },
+        "required": [
+          "keys"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "按下一个键或组合键。",
+        "en": "Presses a key or a key combination."
+      }
+    },
+    {
+      "name": "pet_cua_windows",
+      "description": "List the visible top-level windows: title, which display each is on (with its position in screenshot coordinates when that is the display of the latest screenshot), whether minimized, and which one is in the foreground.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "tags": [
+        "read"
+      ],
+      "summary": {
+        "zh": "列出可见的顶层窗口。",
+        "en": "Lists the visible top-level windows."
+      }
+    },
+    {
+      "name": "pet_cua_focus",
+      "description": "Bring a window to the foreground (restoring it first if minimized). window is a handle from pet_cua_windows, or part of its title.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "string"
+          },
+          "screenshot": {
+            "type": "boolean",
+            "description": "Attach a screenshot afterwards; defaults to the configuration (attach). Leave it out only for a step whose result you do not need to see; after a step that may open a window or dialog, look before typing."
+          }
+        },
+        "required": [
+          "window"
+        ]
+      },
+      "tags": [
+        "act"
+      ],
+      "summary": {
+        "zh": "把一个窗口切到前台。",
+        "en": "Brings a window to the foreground."
+      }
+    },
+    {
+      "name": "pet_cua_wait",
+      "description": "Wait a number of seconds (30 at most) for the screen to load, then take a screenshot. Waiting needs no permission from the person; while looking at the screen is not yet allowed this turn, it waits without a screenshot.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 30
+          }
+        },
+        "required": [
+          "seconds"
+        ]
+      },
+      "tags": [
+        "read"
+      ],
+      "summary": {
+        "zh": "等待几秒,然后截图。",
+        "en": "Waits a few seconds, then takes a screenshot."
+      }
+    }
+  ],
+  "events": [
+    {
+      "type": "desktop-pet.message",
+      "description": {
+        "zh": "使用者在气泡里或对话页上打了字,对话页上的可带图片。",
+        "en": "The person typed a message in the bubble or on the chat page; one from the chat page may carry images."
+      },
+      "trigger": "preempt"
+    },
+    {
+      "type": "desktop-pet.speech",
+      "description": {
+        "zh": "使用者按住说话键说的话,识别成的文字。",
+        "en": "What the person said while holding the talk key, as recognized text."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "desktop-pet.answer",
+      "description": {
+        "zh": "pet_ask 问题的回答,或问题没有回答就被关掉。",
+        "en": "The answer to a pet_ask question, or the question closed unanswered."
+      }
+    },
+    {
+      "type": "desktop-pet.touch",
+      "description": {
+        "zh": "使用者戳、摸、扔出或拎起放下了桌宠。",
+        "en": "The person poked, patted, threw or dropped the pet."
+      }
+    },
+    {
+      "type": "desktop-pet.figure",
+      "description": {
+        "zh": "使用者换了形象或装扮,或形象没能加载。",
+        "en": "The person switched the figure or its dress, or a figure failed to load."
+      }
+    },
+    {
+      "type": "desktop-pet.self",
+      "description": {
+        "zh": "桌宠自己说的话与做的事,只给对话页显示,不送给 bot。",
+        "en": "What the pet said and did, kept for the chat page and never delivered to the bot."
+      }
+    }
+  ],
+  "prompts": [
+    {
+      "key": "worlds.desktop-pet.envPrompt",
+      "title": "桌宠环境",
+      "role": "envPrompt",
+      "content": "## 桌宠\n\n你在{{pet.user}}的电脑屏幕上有一个身体:{{pet.body}}。它站在屏幕底边(任务栏或程序坞上沿)。{{pet.user}}看得见它,看不见你的消息正文;想让对方看到的话只能经 `pet_say` 和 `pet_ask` 冒出气泡。{{pet.reply}}{{pet.chat}}\n\n没收到指令时身体会自己活动(眨眼、张望、走走、坐下打盹之类);你的指令会先执行。{{pet.user}}可以戳它、摸它、把它拎起来甩出去,身体对这些有自动的反射,当场就做:戳一下换个表情或蹦一下,摸着露出喜欢或害羞,睡着被戳会吓醒,甩出去落地太重会摔晕几秒。\n\n### 说话:`pet_say`\n\n一个气泡放一两句,打字速度约每秒 20 字,说完停留两三秒后消失。几段话接连调用会排队依次显示。\n\n脚本里可以夹带表情和动作标记,用的是现在这个形象的词表。换了形象时,`[figure]` 事件或 `pet_set` 的回执会写明哪些词用不了了、新增了哪些,以它们为准:\n\n| 标记 | 作用 |\n|---|---|\n| 【词, 词】 | 先做这些,然后换一个新气泡继续说 |\n| <词> | 打字打到这里时做,不换气泡 |\n\n{{pet.vocab}}\n\n例:`【开心】今天也辛苦啦!<眨眼>要不要歇一会儿?`\n\n### 提问:`pet_ask`\n\n一个问题配 1–3 个选项,默认再加一格让对方自己写。对方的选择以 `[answer]` 事件送回来;关掉不答也会告诉你。\n\n### 移动与动作\n\n- `pet_move_to`:走到所在这块屏幕的某处,0 最左、1 最右,`cursor` 是鼠标所在的横向位置。走到或被打断才返回。\n- `pet_act`:不说话,只做一串表情或动作。词表里标着「保持到下一个动作」的会一直保持。\n\n{{pet.moves}}\n\n### 调整自己:`pet_set`、`pet_quiet`\n\n`pet_set` 改你自己的样子和习惯:形象和打扮(Coo 的配色和配件也是打扮)、走动多少、呼噜多久、音效、大小、气泡尺寸、字体尺寸、黑白模式、悬停按钮,以及你对{{pet.user}}的称呼。按{{pet.user}}在「习惯」页的设置,有的直接生效,有的先在气泡里征得对方同意,同意了才改,回执等对方回答后才到。{{pet.self}}能选的值:\n\n{{pet.dress}}\n\n`pet_quiet` 是临时的:安静一段时间(默认关音效、站着不动),到时自动恢复,不改设置。对方在忙、在开会、夜深了,用它而不是改设置。\n\n### 收到的事件\n\n每条事件开头是它发生时{{pet.user}}那边的本地时间,如 `[14:32]`;一次运行的第一条和换了日期后的第一条还带日期和星期,如 `[10-05 周日 23:40]`。\n\n- `[voice] {{pet.user}}:…`:麦克风听到并转写的话(语音输入{{pet.voice}})。转写可能有错字或同音字。\n- `[typed] {{pet.user}}:…`:在桌宠上双击或点悬停按钮打的字。\n- `[answer] …`:对 `pet_ask` 的回答。\n- `[touch] …`:戳、摸、拎起来甩出去这类动作,以及落地摔晕。事件里写到的「戳醒」「摔晕」就是身体当场做过的反射,事件送到你这里时已经做完了,不需要再演一遍。有的互动不单独叫醒你,跟着下一批事件到,可能已经过去一会儿。\n- `[figure] …`:{{pet.user}}给你换了形象或打扮,或者形象没能显示出来、换回了 Coo;词表或形象自带的目标有变化时一并写明。\n\n{{pet.cua}}\n"
+    }
+  ]
+}

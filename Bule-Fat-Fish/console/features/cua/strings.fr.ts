@@ -1,0 +1,30 @@
+import type { en } from './strings.ts';
+
+export const S: Partial<typeof en> = {
+  title: "Contrôle de l'ordinateur",
+  enabled: 'Laisser Coo utiliser cet ordinateur',
+  control: 'Autoriser la souris et le clavier',
+  controlHint: "Désactivé, Coo peut seulement regarder l'écran.",
+  permission: 'Quand vous demander',
+  levels: { 'ask-each-turn': 'À chaque tour', 'ask-before-acting': "Avant d'agir", 'ask-once': 'Une fois', 'never-ask': 'Jamais' },
+  levelHints: {
+    'ask-each-turn': "Demande à chaque tour avant de regarder l'écran ou d'utiliser la souris et le clavier pour la première fois.",
+    'ask-before-acting': "Regarder se fait sans demander ; demande à chaque tour avant d'utiliser la souris et le clavier pour la première fois.",
+    'ask-once': "Regarder se fait sans demander ; demande une fois avant d'agir, puis plus tant que le oui reste valable.",
+    'never-ask': 'Ne demande jamais.',
+  },
+  grant: 'Un oui vaut',
+  grantSuffix: 'minutes',
+  grantBad: (min: number, max: number) => `Saisissez un nombre entier de ${min} à ${max}`,
+  more: "D'autres réglages se trouvent dans l'onglet Configuration de la page Compagnon de bureau du mode avancé.",
+  saveFailed: (why: string) => `Non enregistré : ${why}`,
+  enabledLabel: "Utiliser l'ordinateur",
+  controlLabel: 'Souris et clavier',
+  riskTitle: 'Laisser Coo utiliser cet ordinateur ?',
+  riskLead: 'Une fois activé, Coo regardera votre écran et utilisera votre souris et votre clavier. ',
+  riskDanger: 'Cela peut être très dangereux',
+  riskAfter: ' ; assurez-vous de bien comprendre ce qui suit :',
+  risks: ['Les captures d\'écran (qui peuvent montrer des contenus privés, comme vos conversations) sont envoyées au service de modèle que vous utilisez', 'Coo peut cliquer au mauvais endroit, faire des fautes de frappe ou se retrouver dans la mauvaise fenêtre. Assurez-vous toujours de pouvoir surveiller et interrompre Coo à tout moment.', 'Ne confiez pas à Coo les paiements, les mots de passe ni rien qui touche à des informations sensibles, à des actions réelles ou à ce qui ne peut pas être annulé.'],
+  riskNote: 'Coo s\'arrête automatiquement dès que vous utilisez la souris ou le clavier. Vous pouvez désactiver cette fonction à tout moment.',
+  riskOk: 'Activer',
+};

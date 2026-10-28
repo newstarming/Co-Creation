@@ -1,0 +1,325 @@
+<!-- Owner: src/extensions.ts, src/extensions/manifest.ts, src/extensions/market.ts, src/extensions/describe.ts, src/extensions/describe-export.ts, scripts/extension-describe.ts, src/extensions/author-guide.ts -->
+
+# 扩展
+
+扩展是一个 npm 包,给一份部署补一个 World、一个 provider 或一个 bot。仓库内建的 World 与
+provider 仅包含参考 bot 所需的实现;其他平台或模型通信协议通过扩展提供。
+
+## 安装
+
+扩展目录默认是检出根下的 `extensions/`;设了环境变量 `CORTICO_EXTENSIONS_DIR` 就是它指的目录,本页说的
+`extensions/` 都换成那里,程序装在只读位置时(比如 macOS 的 `.app`)由应用这样设。
+
+安装会向 `extensions/package.json` 添加依赖,重启进程后加载。支持以下方式:
+
+- WebUI「扩展」页(路由 `extensions/<kind>`):从 npm 上带 `cortico-world` / `cortico-provider` /
+  `cortico-bot` 关键字的包里装,或手动填 npm 包名(可带 `@` 精确版本或 dist-tag)、选本机目录。
+  本机目录以 link 方式装入,改源码后重启生效。
+- WebUI 安装前先调 `POST /api/extensions/check`:只读 manifest(本机目录读 package.json,npm 包读包文档),
+  类别与所选类别不符、声明不合格时拒绝,不导入包代码。
+- 命令行,在仓库根下:
+
+```bash
+cd extensions && corepack pnpm add <包名或目录>
+```
+
+`extensions/pnpm-workspace.yaml` 让 pnpm 把 `extensions/` 当作独立的工作区根,读其中的 `allowBuilds` 与
+`minimumReleaseAgeExclude`。WebUI 第一次装卸或查询 registry 时建一个空的;没有它时 pnpm 把 `extensions/` 当成仓库工作区的
+一员写进根 lockfile,所以命令行先装的话先建一个空文件。WebUI 装卸或查询 registry 前还把 `extensions/package.json` 的
+`packageManager` 设成 Cortico 根 `package.json` 里的那个:corepack 与 pnpm 都按它选 pnpm 版本,旧版本建的目录随 Cortico 升级换版。
+
+装卸都按 pnpm 默认的发布时间门槛(`minimumReleaseAge`,24 小时)解析:依赖版本优先取发布满 24 小时的;范围内没有这样的版本时
+(比如点名装刚发布的版本)pnpm 照装,并把它记进 `minimumReleaseAgeExclude`,之后的装卸都按这份名单放行。
+
+依赖的构建脚本(安装时编译或下载原生模块)只对 `allowBuilds` 里值为 true 的包运行。WebUI 每次安装后,读出构建被跳过、
+还没定下的包:`node_modules/.modules.yaml` 的 `ignoredBuilds` 里 `allowBuilds` 还没有的,和 `allowBuilds` 里值不是
+true 或 false 的。其中是某个已装扩展直接依赖(`dependencies`)的在 `allowBuilds` 里写 true 并 `pnpm rebuild`;其余写成待定值
+`set this to true or false`,仍不构建,安装回执列出包名与批准办法。值为 false 的包不改。命令行安装时被跳过的构建让 `pnpm add` 退出 1,用
+`corepack pnpm approve-builds <包名>` 批准并构建。
+
+`/api/extensions` 也列出随框架提供的 World 与供应商(`builtin`),它们不能删除。`enabled` 表示在本进程生效:
+World 已挂载,供应商已注册,bot 包是这份部署在用的那个。本进程正在使用的 World 与 bot 包不能删除,
+World 先在 World 页停用。
+清单还回 `platform`(服务端的 `process.platform`),包详情回 package.json 的 `os`:市场按 `os` 标出平台,本机不在其中时禁用安装并写明原因。
+`extensions/` 整个目录不进版本控制,是部署状态。
+
+## 更新
+
+扩展更新检查在页面打开及清单刷新时执行。发现新版时显示磁盘版本与 `latest` 版本；
+更新会向 `extensions/` 执行 `pnpm add`，重启进程后加载新版，不需要先卸载。
+详情的历史版本可安装 registry 中仍存在的任一版本，经 check 后 `pnpm add name@version`，重启后生效；配置与 Memory 不随包回退。
+包文档里每个历史版本按自己的 manifest 判断契约兼容(`history[].problems`),不兼容的版本不能装,原因写在那一行。
+契约不兼容的新版不能更新。
+`link:` 本机扩展不查 npm；registry 查询失败的包显示错误，不算已是最新。连接失败和读正文时断线的错误里都带出错的主机和底层错误码
+(例如证书不符时的 `ERR_TLS_CERT_ALTNAME_INVALID`)。
+搜索、详情和检查更新用安装时的 registry:在 `extensions/` 里跑 `pnpm config get registry`,
+读 `extensions/` 与用户的 .npmrc、`pnpm_config_registry`,不读外层工作区的配置。结果在进程内缓存,在扩展页以外改了配置要重启进程;
+pnpm 读不出地址时这三处都报 pnpm 的错误。
+扩展页的「npm 源」读写 `extensions/.npmrc` 的 `registry=` 行,其余行原样保留,填空保存删掉这一行;写入后缓存作废,
+检查更新、搜索、详情和 `pnpm add` 立即改用新源。接口是内部路由 `GET /api/extensions/registry`
+(回 `configured`,即 .npmrc 里的值或 null,以及 pnpm 实际用的 `registry`,读不出时换成 `registryError`)与
+`POST /api/extensions/registry`(体 `{ registry }`,只收 http(s) 地址,回应同 GET)。
+搜索按 `keywords:<类关键字>` 查;这条查询一个包都没回时，再按类关键字本身做文本搜索(有的 registry 不认 `keywords:`,对它回空列表),
+结果都只留带这个关键字的包。市场为空时提示写出所用的 registry。
+搜索结果的下载量另问 npm 下载统计 `api.npmjs.org`,不随 registry 配置变,统计截至 UTC 昨天:近 30 天、近 7 天,
+以及按 365 天一段往前累加的累计,某段为 0 即停,所以中间有整年无下载的包少计更早的下载。
+单次请求 3 秒没回或失败就缺那一项,卡片显示「—」;近 30 天缺的包按下载量排序时排在最后,设了最低下载量时不列出。
+磁盘版本与本进程加载版本不同，即使依赖范围没变，扩展仍标为「待重启」。
+
+## 市场的官方索引
+
+扩展页的标签、徽标(认证、官方、新品)、喜欢 / 不喜欢、评论、图标、截图、能力摘要、自描述与更新日志来自官方索引仓
+[Pal-AI-Lab/cortico-extensions](https://github.com/Pal-AI-Lab/cortico-extensions),文件格式以那里的 DESIGN.md 为准。
+`src/extensions/market.ts` 读索引仓 main 上的 `index.json`、`catalog.json`、`packages/<包名>.json` 与评论快照,
+每个文件依次问两处:
+
+1. 索引源:默认 `https://raw.githubusercontent.com/Pal-AI-Lab/cortico-extensions/main`,扩展页「索引源」配了地址时换成它。
+   配的地址要与 raw 同样的目录结构(`<地址>/index.json`、`<地址>/catalog.json`、`<地址>/packages/<包名>.json`)。3 秒没回算失败。
+2. GitHub contents API `https://api.github.com/repos/Pal-AI-Lab/cortico-extensions/contents/<路径>?ref=main`
+   (`Accept: application/vnd.github.raw`)。扩展页登录了 GitHub 时带上 `github-token.json` 的令牌(每小时 5000 次),
+   没登录时不带(每个 IP 每小时 60 次)。5 秒没回算失败。
+
+连不上、超时、回 404 以外的非 2xx(含额度用完时的 403 / 429)或正文不是 JSON 时问下一处;404 当作文件不存在,不再往下问。
+两处都失败时错误依次写出每一处的主机与原因。读到的内容在内存里留 5 分钟(raw 的 CDN 缓存也是 5 分钟);过了时长再读失败时
+继续用内存里那份。`GET /api/extensions/search` 的回应多一个 `index`
+(按界面语言取好的标签词表与 `newDays`),每条结果按索引补字段:
+
+- 拉黑的包与拉黑的发布者发的包不出现在结果里;已装的照常列出,`/api/extensions` 里那一条带 `blocked`(原因)。
+- `tags`:`catalog.json` 的 `declaredTags`(官方标注除外)、`keywords` 里的普通标签、粘住名单里的警示标签与官方
+  `addTags`,去掉官方 `removeTags`。
+- `official`:npm 维护者里有 `official.maintainers` 的账号,且 repository 在 `official.githubOwners` 名下。`certified` 来自
+  `certified`;`isNew` 按 `catalog.json` 的首次发布时间与 `newDays`;`note`、`supersededBy` 来自官方覆盖;`rating` 是
+  `catalog.json` 里 `discussion` 的票数与评论数。
+- `catalog.json` 的列表字段:`displayName`、`author`、`os`、`summary`(能力摘要)、`changelog`(写了更新说明的版本号与
+  完整更新日志地址);`maintainers` 在搜索端点没给时补上;`icon` 与 `screenshots` 换成索引源下的地址,浏览器直接从那里取图,
+  不经 contents API。显示名与简介按界面
+  语言取 `locales`:简体中文读 `zh`,繁体中文与其余语言读 `en`,没有时用顶层的。
+- `schema` 不是 1 的文件当作读不到。`index.json` 与 `catalog.json` 每次读到新的一份都写进扩展目录的 `market-index.json`、
+  `market-catalog.json`;读不到时先用本进程上次读到的,再用这两个文件,拉黑照常生效,`index.stale` 是这次读取失败的原因,
+  扩展页提示内容可能已过期。`index.json` 一份都没有时 `index` 只有 `error`,结果原样返回;`catalog.json` 一份都没有时
+  结果不带它补的字段。
+
+扩展页「索引源」读写扩展目录的 `market.json`(`{ "indexBase": "<地址>" }`),只收 http(s) 地址,末尾的 `/` 去掉,填空保存删掉
+这个文件;写入后内存里读到的索引文件作废,下次读改问新的源。镜像给出的拉黑名单、标签、徽标与评分由运营镜像的一方决定。
+接口是内部路由 `GET /api/extensions/index-base`(回 `{ configured, base }`:`configured` 是配的地址或 null,`base` 是先问的那一处)
+与 `POST /api/extensions/index-base`(体 `{ indexBase }`,回应同 GET)。
+
+`GET /api/extensions/package` 同时读 `packages/<包名>.json`(作用域包的 `/` 换成 `__`),合进 `changelog`(版本号 →
+更新说明正文)与 `describe`(包的自描述,`summary` 与事件 `description` 按上面的语言规则换成字符串,缺字段的工具、事件与提示词
+丢掉)。`describe` 与 `locales` 对应 Action 扫到的版本,详情是别的版本时不合。文件没有或读不到时详情不带这两项。
+
+包的简介按 Markdown 子集渲染:段落、标题、列表、代码、粗体、斜体与 http(s) 链接,原始 HTML 当文字。
+
+### GitHub 登录、投票与评论
+
+投票与评论由服务端用 GitHub App「Cortico Extension Market」的用户令牌代用户调 GraphQL;这个 App 只有 Discussions 读写权限,
+只装在索引仓。以下都是内部路由:
+
+| 路由 | 请求 | 回应 |
+|---|---|---|
+| `GET /api/extensions/github` | | `{ login?, avatar? }` |
+| `POST /api/extensions/github/login` | | `{ userCode, verificationUri, expiresIn, interval }`;服务端在后台等授权,登上后上一行有账号 |
+| `POST /api/extensions/github/logout` | | `{ ok: true }` |
+| `POST /api/extensions/vote` | `{ name, vote: "up" \| "down" \| null }` | `{ up, down, comments, discussion?, mine? }`,投完后的实时数 |
+| `GET /api/extensions/comments?name=&cursor=` | | `{ comments: [{ id, author, avatar?, body, createdAt, replies? }], total, next?, discussion? }` |
+| `POST /api/extensions/comments` | `{ name, body, replyTo? }` | 新发的那条评论 |
+
+- 令牌存在扩展目录的 `github-token.json`(`.gitignore` 单列了这个文件名),不过期。退出只删这个文件,GitHub 上的授权由用户在
+  GitHub 设置里撤销。
+- 要账号的接口没登录时回 428;令牌被撤销时删掉令牌文件,同样回 428。WebUI 先弹设备码登录,登上后重发一次。
+- 每个包一帖,帖子只由索引仓的 Action 在 extensions 分类(Announcement 格式)里开,标题是包名;还没开帖的包投票与发评论回 409。
+- 改票先撤掉本账号的另一种 reaction 再加上新的。评论数含前 100 条顶层评论下的回复(GraphQL 一页的上限)。
+- 评论一页 5 条,新的在前,`replyTo` 是顶层评论的 id。登录了实时读,管理员隐藏的不列;没登录读 Action 写的
+  `comments/<包名>.json` 快照(作用域包名的 `/` 换成 `__`),比实时晚一个扫描周期;包还没有帖子时是空页。
+
+## 起步
+
+`templates/extension/` 为三种 kind 各提供一个可安装的模板,测试会验证构造和声明接口。
+复制一份出来,改包名与 id,`corepack pnpm install`,`pnpm test`。每个模板的 README 说它验证什么、
+装进实例后该看见什么。
+扩展开发相关项目:[Cortina](https://github.com/Pal-AI-Lab/Cortina)。
+
+## 写一个 World 扩展
+
+`package.json`:
+
+```jsonc
+{
+  "name": "cortico-world-discord",
+  "type": "module",
+  "main": "./src/index.ts",
+  "keywords": ["cortico-world"],
+  "cortico": { "kind": "world", "api": 6, "displayName": "Discord", "icon": "assets/icon.png", "describe": "describe.json", "webUiClient": "dist/webui.js", "webUiStyle": "dist/webui.css" }
+}
+```
+
+`displayName` 可选,是 WebUI 里的扩展名称,读它不需要导入包代码;空串或非字符串时给出 warning 并忽略,
+包照常加载。
+
+`icon` 可选,是包内相对路径,指向 png、webp 或 svg。WebUI 卡片的头像取它,经
+`GET /api/extensions/icon?name=<包名>` 提供;没声明或文件不在时显示淡色 Cortico 标志。
+npm 市场里还没装的包都是默认头像。bot 包的 png 图标
+在 `pnpm start --new` 新建部署时复制成部署的 `avatar.png`,之后头像以部署里的那份为准。路径不合格时给出
+warning 并忽略。
+
+以下字段可选,加载扩展不读它们:
+
+- `tags`:标签 id 的数组。词表、每个标签什么时候贴与级别规则见索引仓的 [TAGS.md](https://github.com/Pal-AI-Lab/cortico-extensions/blob/main/TAGS.md)。
+  市场只认词表里的标签;官方标注作者声明了不算;声明过的警示标签之后的版本去不掉,要向官方申请撤销。
+- `locales`:`{ "zh"?: { displayName?, description? }, "en"?: { ... } }`,只认 `zh` 与 `en`。界面是这种语言时,
+  市场用它覆盖 `displayName` 与 package.json 的 `description`。
+- `screenshots`:包内相对路径的数组,png、webp 或 jpg,显示在市场详情里;索引仓每张收至多 2MB、最多 8 张。
+- `describe`:包内相对路径,指向 `pnpm describe:extension` 导出的 describe.json,即扩展声明的工具、事件、接入方式
+  等。索引仓与市场只读这个文件,不执行包代码;`check:extension` 核对它与代码一致,见「自描述」。
+
+包根目录的 `CHANGELOG.md` 也可选:每个版本一节二级标题,标题里第一个版本号是这一节的版本(`## 0.2.0` 或
+`## [0.2.0] - 2026-10-15`),市场按节显示各版本的更新说明。
+
+入口默认导出一个 `WorldDefinition`(契约见 [worlds.md](worlds.md)):
+
+```ts
+import type { WorldDefinition } from 'cortico/world.ts';
+export default { id: 'discord', label: 'Discord', defaults: () => ({ ... }), create: (ctx) => new DiscordWorld(ctx) } satisfies WorldDefinition<DiscordSection>;
+```
+
+框架以 `cortico/<src 下的路径>` import:`cortico/world.ts`、`cortico/core/types.ts`、
+`cortico/core/util.ts`。运行时由 `src/extensions/runtime.ts` 的模块钩子解析到框架源码本身,
+早于 `node_modules`;开发期装 `cortico` 这个开发依赖,编辑器、`tsc` 与 vitest 按包的 `exports`
+解析同一批文件。`"type": "module"` 是硬要求。
+
+```bash
+corepack pnpm add -D cortico
+```
+
+npm 上的 `cortico` 装下来就是框架的 `src/`,没有入口,启动不了 bot。它的版本跟着框架走;
+按你写扩展时的版本钉住范围。仓库根的 `pnpm publish:package` 生成它。
+
+WebUI 面板可选。自定义面板的 `src/webui/client.ts` 默认导出 `{ panels: { <id>: { mount(ctx) } } }`,
+用 esbuild 打成 `dist/webui.js`(+ `.css`),路径写进 manifest;浏览器侧对 `cortico/*` 只能
+`import type`。面板契约在 `src/web/shared/client-panel.ts`。
+
+配置段归 World 包:`worlds.<id>` 的形状由 `defaults()` 定。bot 通过 `declares` 声明默认启用的 World,
+也可提供 World 配置覆盖;部署 `config.json` 的同名段优先于包默认值。
+
+## 写一个 provider 扩展
+
+`"kind": "provider"`,关键字 `cortico-provider`,默认导出 `ProviderModule`(见
+[providers.md](providers.md))。WebUI 页 id 是 `llm:<id>`,面板与 World 扩展同一套契约。
+
+模块自己的旋钮走 `config(name, entry, language)`:owner 是 `provider:<id>`,路径一律在
+`providers.<端点名>.options.` 下。端点条目里 `options` 之外的字段——`baseUrl`、`secret`、
+`multimodal` 与 `spec`——由框架自己编辑,模块不声明它们。
+
+面板在 `webUi(host)` 里声明。`llm:<id>` 这一页在 WebUI 里没有自己的入口(左栏不列 `kind: 'llm'`
+的页,`#/provider/llm:*` 会被换成 `#/providers`),模块面板只在端点编辑页露面,排法见
+[providers.md](providers.md) 的「WebUI」一节;`ctx.scope.instance` 是端点名。
+
+端点编辑是事务化的:改动随手暂存在浏览器,保存时整条写入,面板经 `ctx.setConfig` 改的配置也只进暂存。
+`ctx.invoke` 把浏览器手上这份条目一起交给服务端,与磁盘上的一致就用真实例、`host.editing` 为假,
+不一致就按这份草稿临时构造一个预览实例、`host.editing` 为真,`host.save` 写回的是草稿而不是磁盘。
+托管进程的启停、下载安装这类运行时动作要求端点已保存,模块在 `editing` 为真时拒绝它们。
+
+## 写一个 bot 扩展
+
+`"kind": "bot"`,关键字 `cortico-bot`,默认导出 `BotDefinition`(见 [personas.md](personas.md)):
+接口与仓内 `bots/<名>/` 相同,安装在 `extensions/` 下。入口可以直接使用 TS 源码
+(`"main": "./index.ts"`),框架经 tsx 跑它。
+
+在部署的 `deployment.json` 中将 `bot` 设为包名即可引用。存在同名 `bots/<名>/` 时优先使用仓内版本。
+一个进程只跑一个 bot,所以装了好几个 bot 包也只 import 被引用的那一个,其余在扩展页上标
+「已装,本部署未用」。bot 的 `id` 不得与仓内 `bots/` 任一目录同名:WebUI 面板产物按
+`persona:<id>` 找,撞名会拿到仓内那份。
+
+`memoryName` 是 Memory 页的标题;缺省回落到 `persona.memory` 的类名,`check:extension` 对缺名的包给警告。
+
+包目录只读。`promptDocs` 里没给 `deploymentPath` 的模板在 WebUI 里能看不能存;要让部署者改,
+在声明里给出部署侧的覆盖路径(通常在 `loaded.rootDir` 下)。bot 要挂的 World 若也是扩展,
+在 `declares` 里声明 id 即可,没装时是灰卡。
+
+## 自描述
+
+三类扩展的定义都写一个 `describe` 字段,给人和扩展市场看,不进提示词:
+
+| 类别 | 字段 | 内容 |
+|---|---|---|
+| World | `WorldDefinition.describe` | `tools`:实例的 `tools()` 可能返回的全部工具,每个有 `name`、`description`、`parameters`、`tags`,可选 `summary`(给人看的一句话);`events`:World 推出的每种事件,有 `type`、`description`,可选 `trigger` 与 `tags` |
+| provider | `ProviderModule.describe` | `protocols`、`auth`(`api-key` / `oauth` / `device-code` / `web-session`)、`local`(模型在本机运行)、`input`(`text` / `image` / `audio` / `video`) |
+| bot | `BotDefinition.describe` | `tools`:Persona 提供的工具,写法同 World;`memory.form`:Memory 的形式 |
+
+`summary`、事件的 `description` 与 `memory.form` 可以写一个字符串,也可以写 `{ zh, en }`。
+实例的 `tools()` 可以按配置改写工具的 `description` 与 `parameters`,名字要在 `describe.tools` 里。
+
+发布前跑:
+
+```bash
+pnpm describe:extension <包目录>
+pnpm check:extension <包目录>
+```
+
+`describe:extension` 在假部署里构造扩展,把声明写成 `cortico.describe` 指的文件;没写这个字段时写
+`describe.json`,并把 `"describe": "describe.json"` 加进 package.json 的 cortico 块。文件内容:World 是
+`tools`、`events` 与 `webUi('zh')` 里 `role: 'envPrompt'` 的提示词模板原文;provider 是 `describe` 加
+`title`、`description` 与非空的档位表;bot 是 `tools`、`declares` 里的 World id、`memoryName` 与
+`memory.form`,以及 `build()` 出的 Persona 提示词模板原文。代码里的声明或模板改了就重新跑一次;
+package.json 有 `files` 时要让它包含这个文件。官方索引与扩展市场只读这个文件,不执行扩展代码。
+
+运行时,工具名不在 `describe.tools` 里、推出的事件 type 不在 `describe.events` 里时照常生效,
+运行日志在 `worlds.<id>`(Persona 的工具在 `persona`)下对每个名字记一条 warn,World 页或 Persona 页列出这些名字。
+定义没写 `describe` 时不检查。
+
+## 校验
+
+```bash
+pnpm check:extension <包目录>
+```
+
+检查会读取 manifest、导入入口、按 kind 核对默认导出结构并确认面板产物存在,随后验证构造与声明接口:
+World 在假部署(默认配置、无密钥)下调用 `create()`、`tools()`、`envPromptVars()`、
+`webUi(language)`,检查工具名与 Core 保留名及内建 World 的冲突;provider 按假端点调用
+`create()`;bot 按假部署调用 `build()`。检查不调用 `start()`,不验证真实服务运行。输出只有英文。
+装配层会为未启用的 World 创建实例,因此所有 World 都必须能以默认配置构造。
+
+最后两段只提示,不计入失败。「Tags」按「市场的官方索引」的两处来源读索引仓 main 上的 `index.json`,不带令牌;环境变量
+`CORTICO_MARKET_INDEX_BASE` 设了地址时用它代替 raw.githubusercontent.com,目录结构要求与扩展页的「索引源」相同。
+两处都读不到或 `schema` 不是 1 时跳过并写出原因;`cortico.tags` 为空时列出整张词表与每个标签的 `when`,不认识的标签给出名字接近的,
+并列出提示与警示标签供对照;官方在 `overrides` 里改过这个包的标签时写出改动与申请格式。「Before publishing」列出声明的标签、
+`CHANGELOG.md` 有没有当前版本的一节、`os`、`cortico.describe` 指的文件在不在,以及向官方提扩展申请的纯文本格式。
+
+配置组声明的每个路径都要落在自己的段内,否则是失败。World 是 `worlds.<id>.`,并且要在
+`defaults()` 里有对应项——缺默认值时 WebUI 照样渲染旋钮、照样写回 config.json,而读到的是代码里
+另一处的兜底值。
+
+provider 是 `providers.<端点名>.options.`。写回的三道闸(服务端的端点保存、WebUI 草稿、
+模块配置写入)都只认 `providers.<端点名>.` 前缀:段外的路径渲染得出旋钮、一改就报越界;
+段内 `options` 之外的路径三道都放行,值直接盖掉框架自己编辑的 `baseUrl`、`secret`、`multimodal`
+与 `spec`。这些值存在端点条目里,不经 `defaults()`,因此只核对段。
+
+自描述检查:定义没写 `describe`、实例的工具名不在 `describe.tools` 里(bot 按 `persona.ownToolNames()`)、
+package.json 没有 `cortico.describe`、它指的文件不在或与重新生成的内容不一致,都是失败。World 实例在默认配置下
+改写了声明的 `description` 或 `parameters` 时只给 warning:扩展市场按声明显示工具数与工具定义的 token 数。`cortico.describe`
+须是包内的 `.json`;`tags` 与 `screenshots` 须是字符串数组,`locales` 须是 `{ zh?, en? }` 且每项只含字符串
+`displayName` 与 `description`。这几项不合格时只给 warning,包照常加载。
+
+## 契约版本
+
+三类扩展各有一个契约版本,`cortico.api` 必须等于自己这一类的那个:world **6**、provider **6**、
+bot **7**。版本不符的扩展不能加载,页面显示「需要升级」;上一版契约是例外,见下一段。
+
+上一版契约(world 5、provider 5、bot 6)的包是例外,经过渡层 `src/extensions/previous-contract.ts` 照常加载:
+旧接口名(`console()`、`BotParts.console`、manifest 的 `consoleClient` / `consoleStyle`、改过名的
+`cortico/` 模块路径、面板脚本直接请求的 `/api/console/providers/...`)接到新名上,扩展页与市场的详情给一条
+warning。Cortico 下一个大版本删除这个过渡层,届时这些包不再加载。`pnpm check:extension` 对上一版契约判失败。
+
+加一的判据按类分:`WorldDefinition` 不兼容变更只加 world,`ProviderModule` 只加 provider,
+`BotDefinition`(连同 `BotParts`、`Persona`、`LoadedConfig`)只加 bot;`WebUiPanelContext`
+与其余共用接口变更时三类一起加。同一次发布里的多处变更合计加一。扩展 API 与 WebUI 协议分别版本化。
+
+旧契约的包怎么改到当前版本,见 [upgrading.md](upgrading.md)。
+
+## 已有扩展
+
+- `cortico-world-vtuber`:Live2D VTuber 演出(VTube Studio、流式 TTS、强制对齐、字幕 overlay)。
+- `cortico-world-asr`:麦克风语音识别(RtAudio 采集、能量门限切分、FireRedASR2-AED 后端)。
+- `cortico-provider-grok`:xAI Grok 端点与设备码授权。
+
+这些包独立于本仓库发布。声卡原生模块、Python 推理环境、VTS 等运行时依赖由相应扩展说明。

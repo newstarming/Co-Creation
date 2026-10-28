@@ -1,0 +1,489 @@
+/*
+ * Memory 页面板的专有样式，仅补充 ctx.ui 未提供的布局与排版。通用原语、树行、历史行和 diff 框复用 WebUI 样式。
+ * 类名使用 ct- 前缀，颜色和字体使用主题变量，避免跨 provider 的全局样式冲突。
+ * 窄屏规则用不具名的容器查询：面板挂在哪个页面的内容容器里都生效。
+ */
+
+/* ---- 通用小件 ---- */
+.ct-dim {
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  line-height: 1.7;
+}
+
+.ct-hidden { display: none !important; }
+
+/* 一排文件名 / 标签 */
+.ct-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+
+/* 权限矩阵一格里的那几枚 pill;重置清单里的"不可恢复"也用它 */
+.ct-cellops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+/* 抽屉里的小表单(新建 / 改名) */
+.ct-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: min(520px, 74vw);
+}
+
+.ct-form textarea.field { min-height: 160px; }
+
+/* ---- 模型档位:每一行共享稳定的字段网格 ---- */
+.ct-models-head { margin-bottom: 4px; }
+
+.ct-model-list { margin-top: 8px; }
+
+.ct-model-row {
+  display: grid;
+  grid-template-columns: minmax(110px, .55fr) minmax(220px, 1.6fr) minmax(150px, .8fr);
+  gap: 12px;
+  align-items: end;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.ct-model-role {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-self: center;
+  min-width: 0;
+}
+
+.ct-model-role strong {
+  overflow-wrap: anywhere;
+  font: 600 13px/1.35 var(--mono);
+  color: var(--ink);
+}
+
+.ct-model-row > .fieldrow { margin: 0; }
+.ct-model-row input.field,
+.ct-model-row select.field { width: 100%; min-width: 0; }
+
+/* ---- 工作区:左边目录侧栏 | 右边编辑器 ----
+   整块高度由内联 height 固定;目录树和编辑区各自填满余下的高度,内容在里面滚动。 */
+.ct-ws {
+  position: relative;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.ct-ws.is-collapsed { grid-template-columns: 40px minmax(0, 1fr); }
+
+.ct-side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--sheet-2);
+  border-right: 1px solid var(--line);
+}
+
+.ct-sidehead {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 40px;
+  padding: 0 6px 0 14px;
+  flex: none;
+}
+
+.ct-sidetitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--ink-soft);
+}
+
+.ct-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+}
+
+.ct-iconbtn:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.ct-iconbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.ct-filterrow { padding: 0 10px 8px; flex: none; }
+.ct-filter { width: 100%; }
+
+.ct-tree {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden auto;
+  scrollbar-gutter: stable;
+  padding: 0 6px 10px;
+}
+
+/* 收起:侧栏只剩展开按钮 */
+.ct-ws.is-collapsed .ct-sidehead { padding: 0; justify-content: center; }
+.ct-ws.is-collapsed .ct-sidehead > :not(.ct-sidetoggle),
+.ct-ws.is-collapsed .ct-filterrow,
+.ct-ws.is-collapsed .ct-tree { display: none; }
+
+/* 名字过长时截成省略号,大小一栏始终留在行尾 */
+.ct-tree .treerow { min-width: 0; }
+.ct-tree .treerow > .ct-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ct-tree .treerow > .fsize { flex: none; }
+
+/* 选中的档案只轻轻标出;目录行用字重区分,不用主题色 */
+.ct-tree .treerow.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--ink); }
+.ct-tree .treerow.sel .fsize { color: var(--ink-dim); }
+.ct-tree .treerow.dir { color: var(--ink-soft); font-weight: 600; }
+
+.ct-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ct-file {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ct-file[hidden], .ct-empty[hidden] { display: none; }
+
+/* 没有打开的档案:右栏中间一行提示 */
+.ct-empty {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+.ct-pane > .msgline:not(:empty) { padding: 6px 14px; border-top: 1px solid var(--line); }
+
+.ct-filehead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 40px;
+  padding: 0 8px 0 16px;
+  flex: none;
+  border-bottom: 1px solid var(--line);
+}
+
+.ct-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 13.5px/1.5 var(--mono);
+  color: var(--ink);
+}
+
+.ct-path:has(> .ct-pathname) { display: flex; }
+.ct-pathdir { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 400; color: var(--ink-soft); }
+.ct-pathname { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ct-path:has(> .ct-pathname)::after { flex: none; }
+
+.ct-path.is-dirty::after {
+  content: '●';
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--warn);
+  vertical-align: 1px;
+}
+
+.ct-filetools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px 6px 12px;
+  flex: none;
+  border-bottom: 1px solid var(--line);
+}
+
+.ct-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  flex: none;
+  background: var(--line-2);
+}
+
+/* 图标按钮的两种强调:保存用主题色,删除悬停时变红;不可用时淡出 */
+.ct-iconbtn.is-primary:not(:disabled) { color: var(--accent); }
+.ct-iconbtn.is-danger:not(:disabled):hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.ct-iconbtn:disabled { opacity: .35; cursor: default; background: transparent; }
+
+.ct-body {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* 整块的底边:拖它改整块的高度 */
+.ct-grip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  height: 6px;
+  cursor: ns-resize;
+  touch-action: none;
+  transition: background-color .15s ease;
+}
+
+.ct-grip:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+
+/* 编辑 / 分栏 / 预览三挡:同一个容器,靠 class 切列 */
+.ct-editwrap {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 查找:浮在编辑区右上角;展开后多一行替换 */
+.ct-find {
+  position: absolute;
+  top: 8px;
+  right: 22px;
+  z-index: 5;
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 4px;
+  background: var(--sheet);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px color-mix(in srgb, #000 14%, transparent);
+}
+
+.ct-findrows { display: flex; flex-direction: column; gap: 4px; }
+.ct-findrow { display: flex; align-items: center; gap: 2px; min-height: 28px; }
+.ct-replacerow { display: none; }
+.ct-find.is-replacing .ct-replacerow { display: flex; }
+.ct-findexpand svg { transition: transform .15s ease; }
+.ct-find.is-replacing .ct-findexpand svg { transform: rotate(90deg); }
+
+/* 查找框里的两个输入框只有一行高,聚焦时只换边框颜色,不加外圈 */
+.ct-find input.field {
+  width: 200px;
+  height: 26px;
+  min-height: 0;
+  padding: 0 8px;
+  font-size: 13px;
+  line-height: 24px;
+}
+
+/* 工作区里的输入框和编辑器聚焦时都不发光:编辑器本身无框,输入框只换边框颜色 */
+.ct-ws .field:focus,
+.ct-ws .field:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.ct-ws input.field:focus { border-color: color-mix(in srgb, var(--accent) 60%, var(--line-2)); }
+
+.ct-findcount {
+  min-width: 56px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.ct-editwrap.ct-mode-edit { grid-template-columns: minmax(0, 1fr); }
+.ct-editwrap.ct-mode-edit .ct-preview { display: none; }
+
+.ct-editwrap.ct-mode-preview { grid-template-columns: minmax(0, 1fr); }
+.ct-editwrap.ct-mode-preview .ct-textarea { display: none; }
+
+.ct-editwrap.ct-mode-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.ct-editwrap.ct-mode-split .ct-preview { border-left: 1px solid var(--line); }
+
+/* 页脚像状态栏:行列、字数在左,保存状态在右 */
+.ct-file > .rowbar:last-child { flex: none; margin: 0; padding: 5px 14px; border-top: 1px solid var(--line); }
+
+/* 长行折行显示(不改文件内容),分栏时也不用横向滚动 */
+.ct-textarea.field {
+  height: 100%;
+  min-height: 0;
+  resize: none;
+  padding: 14px 18px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font: 13.5px/1.72 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  tab-size: 2;
+}
+
+.ct-preview {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  overflow-wrap: anywhere;
+  padding: 14px 18px;
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.75;
+}
+
+.ct-preview h1, .ct-preview h2, .ct-preview h3,
+.ct-preview h4, .ct-preview h5, .ct-preview h6 {
+  font-family: var(--serif);
+  color: var(--accent);
+  margin: 14px 0 6px;
+  line-height: 1.35;
+}
+
+.ct-preview h1 { font-size: 20px; }
+.ct-preview h2 { font-size: 17px; }
+.ct-preview h3 { font-size: 15px; }
+.ct-preview p { margin: 6px 0; }
+.ct-preview code { font: 12.5px var(--mono); color: var(--ink-blue, var(--accent)); }
+
+.ct-preview pre {
+  background: var(--sheet-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: 12.5px/1.65 var(--mono);
+}
+
+.ct-note {
+  margin: 0;
+  white-space: pre-wrap;
+  font: 12.5px/1.7 var(--mono);
+  color: var(--ink-soft);
+}
+
+.ct-preview blockquote {
+  margin: 6px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-2);
+  color: var(--ink-soft);
+}
+
+/* 这一份档案的历史(编辑区换成它) */
+.ct-hist {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 8px 14px;
+}
+
+/* ---- 版本历史:最近一次提交在上,提交流水紧跟其后,不另起分割线 ---- */
+.ct-lastcommit {
+  padding: 12px 14px;
+  background: var(--sheet-2);
+  border-radius: 8px;
+}
+
+.ct-commitmsg {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.ct-commitmeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 4px;
+  font: 12px/1.5 var(--mono);
+  color: var(--ink-dim);
+}
+
+.ct-histsheet .sh-desc { max-width: none; }
+.ct-histsheet h3.ct-logtitle { margin-top: 32px; }
+
+.ct-histbar { gap: 10px; margin-bottom: 8px; }
+.ct-histbar .ct-histsearch { flex: 0 1 560px; width: auto; min-width: 0; }
+
+.ct-pagesize {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.ct-pagesize select.field { width: auto; }
+
+.ct-pager { gap: 8px; margin-top: 10px; min-height: 32px; }
+.ct-pageof { font: 12px var(--mono); color: var(--ink-soft); }
+
+@container (max-width: 700px) {
+  .ct-ws, .ct-ws.is-collapsed { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; height: auto !important; }
+  .ct-body { flex: none; height: 420px; }
+  .ct-grip { display: none; }
+  .ct-side { border-right: 0; border-bottom: 1px solid var(--line); }
+  .ct-ws.is-collapsed .ct-sidehead { padding: 0 6px 0 14px; justify-content: flex-start; }
+  .ct-ws.is-collapsed .ct-sidetitle { display: block; }
+  .ct-tree { flex: none; max-height: 240px; }
+  .ct-empty { min-height: 160px; }
+  .ct-editwrap.ct-mode-split { grid-template-columns: minmax(0, 1fr); }
+  .ct-editwrap.ct-mode-split .ct-preview { display: none; }
+}
+
+@container (max-width: 900px) {
+  .ct-model-row { grid-template-columns: minmax(110px, .6fr) minmax(220px, 1.4fr) auto; }
+  .ct-model-role { grid-row: 1 / 3; }
+  .ct-model-row > .fieldrow:first-of-type { grid-column: 2; grid-row: 1; }
+  .ct-model-row > .fieldrow:nth-of-type(2) { grid-column: 2; grid-row: 2; }
+  .ct-model-row > .btn { grid-column: 3; grid-row: 2; }
+}
+
+@container (max-width: 620px) {
+  .ct-model-row { grid-template-columns: minmax(0, 1fr); }
+  .ct-model-role,
+  .ct-model-row > .fieldrow:first-of-type,
+  .ct-model-row > .fieldrow:nth-of-type(2),
+  .ct-model-row > .btn { grid-column: 1; grid-row: auto; }
+  .ct-model-row > .btn { justify-self: start; }
+}

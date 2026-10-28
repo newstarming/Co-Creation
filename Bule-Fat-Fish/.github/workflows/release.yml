@@ -1,0 +1,141 @@
+name: release
+
+# Pushing a tag v<version> builds the Windows installer and portable zip, the macOS downloads (Apple silicon and
+# Intel, both built on the Apple silicon runner) and the Linux AppImage and deb, and attaches them to that tag's release.
+# The portable zip is updated by hand, so it stays out of latest.yml.
+# Once the repository has the Steam variable and secrets (docs/STEAM.md), the same tag also builds the Steam
+# version for Windows and uploads it to the Steam branch `staging`; it goes to everyone when set live in Steamworks.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: x64
+            files: dist/Coopanion-Setup-*.exe dist/Coopanion-Setup-*.exe.blockmap dist/latest.yml
+          - os: windows-latest
+            arch: x64
+            channel: portable
+            files: dist/Coopanion-*-win-x64-portable.zip
+          - os: macos-latest
+            arch: arm64
+            files: dist/Coopanion-*-mac-arm64.dmg dist/Coopanion-*-mac-arm64.zip
+          - os: macos-latest
+            arch: x64
+            files: dist/Coopanion-*-mac-x64.dmg dist/Coopanion-*-mac-x64.zip
+          - os: ubuntu-latest
+            arch: x64
+            files: dist/Coopanion-*-linux-x64.AppImage dist/Coopanion-*-linux-x64.deb dist/latest-linux.yml
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - run: corepack enable
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:installer
+        env:
+          PACK_ARCH: ${{ matrix.arch }}
+          COOPANION_CHANNEL: ${{ matrix.channel }}
+          # no Developer ID: the macOS build is signed ad hoc (electron-builder.yml)
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+          cp ${{ matrix.files }} release-artifacts/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installers-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.channel || 'github' }}
+          path: release-artifacts/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: installers-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          cd release-artifacts
+          files=("Coopanion-Setup-${version}.exe" "Coopanion-${version}-win-x64-portable.zip" "Coopanion-${version}-mac-arm64.dmg" "Coopanion-${version}-mac-arm64.zip" "Coopanion-${version}-mac-x64.dmg" "Coopanion-${version}-mac-x64.zip" "Coopanion-${version}-linux-x64.AppImage" "Coopanion-${version}-linux-x64.deb")
+          for file in "${files[@]}" latest.yml latest-linux.yml; do test -s "$file"; done
+          sha256sum "${files[@]}" > SHA256SUMS.txt
+          cd ..
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          test -f "$notes"
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "Coopanion $GITHUB_REF_NAME" --notes-file "$notes"
+          # a published release keeps its files; only a draft (a rerun after a failed upload) is overwritten
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
+          gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest --notes-file "$notes"
+
+  steam-build:
+    if: vars.STEAM_APP_ID != ''
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - run: corepack enable
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:installer
+        env:
+          COOPANION_CHANNEL: steam
+          STEAM_APP_ID: ${{ vars.STEAM_APP_ID }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: steam-win64
+          path: dist/win-unpacked
+          if-no-files-found: error
+
+  steam-upload:
+    needs: steam-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: steam-win64
+          path: steam/win64
+      - uses: game-ci/steam-deploy@50f6b29fc64922e19a16d202a88fe199d394b536 # v3.2.1
+        with:
+          username: ${{ secrets.STEAM_USERNAME }}
+          configVdf: ${{ secrets.STEAM_CONFIG_VDF }}
+          appId: ${{ vars.STEAM_APP_ID }}
+          buildDescription: ${{ github.ref_name }}
+          rootPath: steam
+          depot1Path: win64
+          releaseBranch: staging
+          cliVersion: v0.1.72

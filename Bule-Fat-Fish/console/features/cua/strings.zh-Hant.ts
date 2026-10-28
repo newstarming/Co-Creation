@@ -1,0 +1,30 @@
+import type { en } from './strings.ts';
+
+export const S: Partial<typeof en> = {
+  title: '電腦操作',
+  enabled: '讓 Coo 操作這台電腦',
+  control: '允許操作滑鼠和鍵盤',
+  controlHint: '關閉時只能查看螢幕。',
+  permission: '詢問時機',
+  levels: { 'ask-each-turn': '每輪詢問', 'ask-before-acting': '操作前詢問', 'ask-once': '詢問一次', 'never-ask': '從不詢問' },
+  levelHints: {
+    'ask-each-turn': '每輪首次查看螢幕或操作滑鼠鍵盤前詢問。',
+    'ask-before-acting': '查看螢幕不詢問；每輪首次操作滑鼠鍵盤前詢問。',
+    'ask-once': '查看螢幕不詢問；操作前詢問一次，有效期內不再詢問。',
+    'never-ask': '查看螢幕和操作都不詢問。',
+  },
+  grant: '同意有效期',
+  grantSuffix: '分鐘',
+  grantBad: (min: number, max: number) => `請填寫 ${min} 到 ${max} 之間的整數`,
+  more: '更多設定在進階模式「桌寵」頁的「設定」分頁。',
+  saveFailed: (why: string) => `沒有儲存：${why}`,
+  enabledLabel: '使用電腦',
+  controlLabel: '滑鼠與鍵盤',
+  riskTitle: '讓 Coo 操作這台電腦？',
+  riskLead: '開啟後，Coo 將會觀察你的螢幕，操作你的滑鼠和鍵盤。',
+  riskDanger: '這可能非常危險',
+  riskAfter: '，請確認你理解以下內容：',
+  risks: ['螢幕截圖（可能包含你的隱私內容，如聊天紀錄）將會傳送給上游模型服務', 'Coo 可能會點錯地方、打錯字，或者進入錯誤的視窗。時刻確保你能隨時觀察並打斷 Coo。', '付款、密碼一類涉及敏感資訊、現實操作或無法撤回的操作，請不要交給 Coo。'],
+  riskNote: 'Coo 會在你操作滑鼠或鍵盤時自動停止。你可以隨時關閉這個功能。',
+  riskOk: '開啟',
+};

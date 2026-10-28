@@ -1,0 +1,56 @@
+import { pick } from '../../../base/language.ts';
+import { S as zhHant } from './strings.zh-Hant.ts';
+import { S as ja } from './strings.ja.ts';
+import { S as ko } from './strings.ko.ts';
+import { S as fr } from './strings.fr.ts';
+import { S as de } from './strings.de.ts';
+import { S as es419 } from './strings.es-419.ts';
+import { S as ptBR } from './strings.pt-BR.ts';
+import { S as it } from './strings.it.ts';
+import { S as ru } from './strings.ru.ts';
+
+const zh = {
+  sectionDisk: '保存在磁盘',
+  sectionMemory: '只在内存',
+  nukeAll: '⚠ 一键清空服务端全部存储',
+  clear: '清除',
+  dangerTitle: (label: string) => `⚠ 危险操作：${label}`,
+  dangerBody: (note: string) => `${note}\n\n确定不可恢复地清除？`,
+  clearTitle: (label: string) => `清除「${label}」？`,
+  cleared: '已清除',
+  clearFailed: (err: string) => '清除失败: ' + err,
+  nukeTitle: '⚠⚠ 一键清空全部存储',
+  nukeBody: '清除服务端清单里的全部存储项，不只是本页列出的这些。此操作无法撤销。将清除：',
+  partialFailed: (keys: string) => '部分失败: ' + keys,
+  nukedAll: (count: number) => `✓ 已全部清空（${count} 项）`,
+  nukeFailed: (err: string) => '一键清空失败: ' + err,
+  noList: '(服务端未挂载存储清单)',
+  empty: '这一页没有存储项',
+  loadFailed: (err: string) => '存储清单加载失败: ' + err,
+  loading: '加载中…',
+};
+
+export const en: typeof zh = {
+  sectionDisk: 'Saved to disk',
+  sectionMemory: 'In memory only',
+  nukeAll: '⚠ Clear all server storage',
+  clear: 'Clear',
+  dangerTitle: (label: string) => `⚠ Dangerous: ${label}`,
+  dangerBody: (note: string) => `${note}\n\nClear irreversibly?`,
+  clearTitle: (label: string) => `Clear "${label}"?`,
+  cleared: 'Cleared',
+  clearFailed: (err: string) => 'Clear failed: ' + err,
+  nukeTitle: '⚠⚠ Clear all storage',
+  nukeBody: 'Clears every storage item on the server, not only the ones listed on this page. This cannot be undone. To be cleared:',
+  partialFailed: (keys: string) => 'Partially failed: ' + keys,
+  nukedAll: (count: number) => `✓ Everything cleared (${count} items)`,
+  nukeFailed: (err: string) => 'Clear all failed: ' + err,
+  noList: '(The server has no storage list mounted)',
+  empty: 'This page has no storage items',
+  loadFailed: (err: string) => 'Failed to load storage list: ' + err,
+  loading: 'Loading…',
+};
+
+export const S = pick({
+  zh, en, 'zh-Hant': zhHant, ja, ko, fr, de, 'es-419': es419, 'pt-BR': ptBR, it, ru,
+});
